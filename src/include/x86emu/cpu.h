@@ -58,7 +58,10 @@ private:
     struct Prefixes;
     int DoOpcode();
     auto ParsePrefixes() -> Prefixes;
-    auto ReadByte(uint32_t addr) -> uint8_t;
+    auto ReadByte(SegmentRegister sreg, uint16_t addr) -> uint8_t;
+    void PushSreg(SegmentRegister sreg);
+    void PopSreg(SegmentRegister sreg);
+    auto CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t;
 
     CPUState state = {};
     IIOHook* hook;

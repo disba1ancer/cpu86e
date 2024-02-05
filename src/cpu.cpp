@@ -84,13 +84,22 @@ int CPU::DoOpcode()
 {
     auto prevIP = state.ip;
     Prefixes prefixes = ParsePrefixes();
+    auto op = ReadByte(CS, state.ip);
+    if (op < 0x40) {
+        if ((op & 6) == 6) {
+            auto r = SegmentRegister(op & 0x18);
+            using P = void(CPU::*)(SegmentRegister);
+            constexpr P f[] = { &CPU::PushSreg, &CPU::PopSreg };
+            (this->*(f[op & 1]))(r);
+        }
+    }
     return Normal;
 }
 
 auto CPU::ParsePrefixes() -> Prefixes
 {
     Prefixes prefixes = { SegReserve, 0 };
-    auto op = ReadByte(state.ip);
+    auto op = ReadByte(CS, state.ip);
     while (true) {
         switch (op) {
         case 0x26:
@@ -133,11 +142,16 @@ auto CPU::ParsePrefixes() -> Prefixes
     }
 }
 
-uint8_t CPU::ReadByte(uint32_t addr)
+auto CPU::ReadByte(SegmentRegister sreg, uint16_t addr) -> uint8_t
 {
     unsigned char byte;
-    hook->ReadMem(state, &byte, 1, addr);
+    hook->ReadMem(state, &byte, 1, CalcAddr(sreg, addr));
     return byte;
+}
+
+auto CPU::CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t
+{
+    return addr + state.sregs[sreg] * 0x10;
 }
 
 } // namespace x86emu
