@@ -14,6 +14,7 @@ target_sources(x86emu PUBLIC FILE_SET HEADERS BASE_DIRS src/include FILES
 )
 
 add_executable(test src/main.cpp)
+target_link_libraries(test PRIVATE x86emu)
 
 install(TARGETS x86emu
     EXPORT x86emu

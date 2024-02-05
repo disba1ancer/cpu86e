@@ -58,6 +58,7 @@ private:
     struct Prefixes;
     int DoOpcode();
     auto ParsePrefixes() -> Prefixes;
+    auto ReadByte(uint32_t addr) -> uint8_t;
 
     CPUState state = {};
     IIOHook* hook;

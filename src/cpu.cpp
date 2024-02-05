@@ -82,6 +82,7 @@ void CPU::Run()
 
 int CPU::DoOpcode()
 {
+    auto prevIP = state.ip;
     Prefixes prefixes = ParsePrefixes();
     return Normal;
 }
@@ -89,7 +90,7 @@ int CPU::DoOpcode()
 auto CPU::ParsePrefixes() -> Prefixes
 {
     Prefixes prefixes = { SegReserve, 0 };
-    auto op = hook->ReadMemByte(state.ip);
+    auto op = ReadByte(state.ip);
     while (true) {
         switch (op) {
         case 0x26:
@@ -130,6 +131,13 @@ auto CPU::ParsePrefixes() -> Prefixes
         }
         ++state.ip;
     }
+}
+
+uint8_t CPU::ReadByte(uint32_t addr)
+{
+    unsigned char byte;
+    hook->ReadMem(state, &byte, 1, addr);
+    return byte;
 }
 
 } // namespace x86emu
