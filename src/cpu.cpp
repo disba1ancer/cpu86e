@@ -80,11 +80,114 @@ void CPU::Run()
 
 }
 
+struct CPU::Operations {
+
+    enum RMType {
+        Addr,
+        AddrSS,
+        Reg
+    };
+
+    struct ModRM {
+        uint16_t addr;
+        uint8_t type;
+        uint8_t reg;
+    };
+
+    static ModRM GetModRM(CPU* cpu)
+    {
+        auto modRM = cpu->ReadByte(CS, cpu->state.ip++);
+        ModRM result;
+        result.reg = (modRM >> 3) & 7;
+        if ((modRM & 0xC0) == 0xC0) {
+            result.addr = modRM & 7;
+            result.type = Reg;
+            return result;
+        }
+        result.type = Addr;
+        auto regs = cpu->state.gpr;
+        switch (modRM & 7) {
+        case 0:
+            result.addr = regs[BX] + regs[SI];
+            break;
+        case 1:
+            result.addr = regs[BX] + regs[DI];
+            break;
+        case 2:
+            result.type = AddrSS;
+            result.addr = regs[BP] + regs[SI];
+            break;
+        case 3:
+            result.type = AddrSS;
+            result.addr = regs[BP] + regs[DI];
+            break;
+        case 4:
+            result.addr = regs[SI];
+            break;
+        case 5:
+            result.addr = regs[DI];
+            break;
+        case 6:
+            if ((modRM & 0xC0) == 0) {
+                result.addr = 0;
+                modRM |= 0x80;
+                break;
+            }
+            result.type = AddrSS;
+            result.addr = regs[BP];
+            break;
+        case 7:
+            result.addr = regs[BX];
+            break;
+        }
+        switch (modRM & 0xC0) {
+        case 0:
+            break;
+        case 0x40:
+            result.addr += cpu->ReadByte(CS, cpu->state.ip++);
+            break;
+        case 0x80:
+            result.addr += cpu->ReadWord(CS, cpu->state.ip);
+            cpu->state.ip += 2;
+            break;
+        }
+        return result;
+    }
+
+    static SegmentRegister GetSeg(Prefixes prefixes, int type)
+    {
+        if (prefixes.segment == SegReserve) {
+            return SegmentRegister(SS + (type != AddrSS));
+        }
+    }
+
+    static void AddB(CPU* cpu, Prefixes prefixes)
+    {
+        ModRM operands = GetModRM(cpu);
+        auto regs = cpu->state.gpr;
+        if (operands.type != Reg) {
+            auto sreg = GetSeg(prefixes, operands.type);
+            auto t = cpu->ReadByte(sreg, operands.addr);
+            uint8_t r = t + regs[operands.reg];
+            auto zero = r == 0;
+            auto carry = r < t;
+            auto sign = !!(r & 0x80);
+            auto ovfl = t & uint8_t(regs[operands.reg]) & 0x80 && !sign;
+            cpu->WriteByte(sreg, operands.addr, r);
+        }
+    }
+
+    using Op = void(CPU*, Prefixes);
+    Op* map1[256] = {
+        AddB
+    };
+};
+
 int CPU::DoOpcode()
 {
     auto prevIP = state.ip;
     Prefixes prefixes = ParsePrefixes();
-    auto op = ReadByte(CS, state.ip);
+    auto op = ReadByte(CS, state.ip++);
     if (op < 0x40) {
         if ((op & 6) == 6) {
             auto r = SegmentRegister(op & 0x18);
@@ -145,8 +248,21 @@ auto CPU::ParsePrefixes() -> Prefixes
 auto CPU::ReadByte(SegmentRegister sreg, uint16_t addr) -> uint8_t
 {
     unsigned char byte;
-    hook->ReadMem(state, &byte, 1, CalcAddr(sreg, addr));
+    hook->ReadMem(state, &byte, sizeof(byte), CalcAddr(sreg, addr));
     return byte;
+}
+
+uint16_t CPU::ReadWord(SegmentRegister sreg, uint16_t addr)
+{
+    unsigned char word[2];
+    hook->ReadMem(state, word, sizeof(word), CalcAddr(sreg, addr));
+    return word[1] * 0x100 + word[0];
+}
+
+void CPU::WriteByte(SegmentRegister sreg, uint16_t addr, uint8_t val)
+{
+    unsigned char byte = val;
+    hook->WriteMem(state, CalcAddr(sreg, addr), &byte, sizeof(byte));
 }
 
 auto CPU::CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t

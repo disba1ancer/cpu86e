@@ -56,9 +56,12 @@ public:
     void Run();
 private:
     struct Prefixes;
+    struct Operations;
     int DoOpcode();
     auto ParsePrefixes() -> Prefixes;
     auto ReadByte(SegmentRegister sreg, uint16_t addr) -> uint8_t;
+    auto ReadWord(SegmentRegister sreg, uint16_t addr) -> uint16_t;
+    void WriteByte(SegmentRegister sreg, uint16_t addr, uint8_t val);
     void PushSreg(SegmentRegister sreg);
     void PopSreg(SegmentRegister sreg);
     auto CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t;
