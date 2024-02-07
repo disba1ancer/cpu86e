@@ -31,11 +31,6 @@ enum SegmentRegister {
     SegReserve
 };
 
-enum Opcode {
-    WordBit = 1,
-    InverseBit = 2,
-};
-
 struct CPUState {
     uint16_t gpr[8];
     uint16_t sregs[6];
@@ -48,21 +43,22 @@ struct FlagsCache {
     enum Type {
         None,
         Logical,
-        Arithmetic
+        Arithmetic,
     } type;
 };
 
 class CPU
 {
 public:
-    CPU();
-    CPU(const CPUState& initState);
+    CPU(IIOHook& hook);
+    CPU(const CPUState& initState, IIOHook& hook);
     void StoreState(CPUState& initState) const;
     void LoadState(const CPUState& initState);
     auto State() -> CPUState&;
     auto State() const -> const CPUState&;
     void SetHook(IIOHook* hook);
     void Run();
+    void Step();
 private:
     struct Prefixes;
     struct Operations;
@@ -77,7 +73,7 @@ private:
     auto CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t;
     void FlushFlags();
 
-    CPUState state = {};
+    CPUState state;
     FlagsCache flagsCache;
     IIOHook* hook;
 };
