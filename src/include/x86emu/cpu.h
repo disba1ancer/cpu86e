@@ -43,6 +43,15 @@ struct CPUState {
     uint16_t flags;
 };
 
+struct FlagsCache {
+    uint16_t a, b, r;
+    enum Type {
+        None,
+        Logical,
+        Arithmetic
+    } type;
+};
+
 class CPU
 {
 public:
@@ -62,11 +71,14 @@ private:
     auto ReadByte(SegmentRegister sreg, uint16_t addr) -> uint8_t;
     auto ReadWord(SegmentRegister sreg, uint16_t addr) -> uint16_t;
     void WriteByte(SegmentRegister sreg, uint16_t addr, uint8_t val);
+    void WriteWord(SegmentRegister sreg, uint16_t addr, uint16_t val);
     void PushSreg(SegmentRegister sreg);
     void PopSreg(SegmentRegister sreg);
     auto CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t;
+    void FlushFlags();
 
     CPUState state = {};
+    FlagsCache flagsCache;
     IIOHook* hook;
 };
 

@@ -36,6 +36,14 @@ char8_t map[] = {
     0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1,
 };
 
+bool GetParity(uint16_t val)
+{
+    val = (val & 0xFF) ^ (val >> 8);
+    val = (val & 0xF) ^ ((val & 0xF0) >> 4);
+    val = (val & 0x3) ^ ((val & 0xC) >> 2);
+    return (val & 0x1) ^ ((val & 0x2) >> 1);
+}
+
 }
 
 CPU::CPU()
@@ -167,19 +175,64 @@ struct CPU::Operations {
         auto regs = cpu->state.gpr;
         if (operands.type != Reg) {
             auto sreg = GetSeg(prefixes, operands.type);
-            auto t = cpu->ReadByte(sreg, operands.addr);
-            uint8_t r = t + regs[operands.reg];
-            auto zero = r == 0;
-            auto carry = r < t;
-            auto sign = !!(r & 0x80);
-            auto ovfl = t & uint8_t(regs[operands.reg]) & 0x80 && !sign;
-            cpu->WriteByte(sreg, operands.addr, r);
+            auto& cache = cpu->flagsCache;
+            cache.a = cpu->ReadByte(sreg, operands.addr) * 0x100;
+            cache.b = (regs[operands.reg & 3] << ((operands.reg * 2 & 8) ^ 8)) & 0xFF00;
+            cache.r = cache.a + cache.b;
+            cache.type = cache.Arithmetic;
+            cpu->WriteByte(sreg, operands.addr, cache.r >> 8);
+        }
+    }
+
+    static void AddW(CPU* cpu, Prefixes prefixes)
+    {
+        ModRM operands = GetModRM(cpu);
+        auto regs = cpu->state.gpr;
+        if (operands.type != Reg) {
+            auto sreg = GetSeg(prefixes, operands.type);
+            auto& cache = cpu->flagsCache;
+            cache.a = cpu->ReadWord(sreg, operands.addr);
+            cache.b = regs[operands.reg];
+            cache.r = cache.a + cache.b;
+            cache.type = cache.Arithmetic;
+            cpu->WriteWord(sreg, operands.addr, cache.r);
+        }
+    }
+
+    static void AddBR(CPU* cpu, Prefixes prefixes)
+    {
+        ModRM operands = GetModRM(cpu);
+        auto regs = cpu->state.gpr;
+        if (operands.type != Reg) {
+            auto sreg = GetSeg(prefixes, operands.type);
+            auto& cache = cpu->flagsCache;
+            cache.a = (regs[operands.reg & 3] << ((operands.reg * 2 & 8) ^ 8)) & 0xFF00;
+            cache.b = cpu->ReadByte(sreg, operands.addr) * 0x100;
+            cache.r = cache.a + cache.b;
+            cache.type = cache.Arithmetic;
+            regs[operands.reg & 3] &= 0xFF << ((operands.reg * 2 & 8) ^ 8);
+            regs[operands.reg & 3] |= cache.r >> ((operands.reg * 2 & 8) ^ 8);
+        }
+    }
+
+    static void AddWR(CPU* cpu, Prefixes prefixes)
+    {
+        ModRM operands = GetModRM(cpu);
+        auto regs = cpu->state.gpr;
+        if (operands.type != Reg) {
+            auto sreg = GetSeg(prefixes, operands.type);
+            auto& cache = cpu->flagsCache;
+            cache.a = regs[operands.reg];
+            cache.b = cpu->ReadWord(sreg, operands.addr);
+            cache.r = cache.a + cache.b;
+            cache.type = cache.Arithmetic;
+            regs[operands.reg] = cache.r;
         }
     }
 
     using Op = void(CPU*, Prefixes);
     Op* map1[256] = {
-        AddB
+        AddB, AddW, AddBR, AddWR
     };
 };
 
@@ -265,9 +318,37 @@ void CPU::WriteByte(SegmentRegister sreg, uint16_t addr, uint8_t val)
     hook->WriteMem(state, CalcAddr(sreg, addr), &byte, sizeof(byte));
 }
 
+void CPU::WriteWord(SegmentRegister sreg, uint16_t addr, uint16_t val)
+{
+    unsigned char word[2] = { static_cast<unsigned char>(val & 0xFF), static_cast<unsigned char>(val >> 8) };
+    hook->WriteMem(state, CalcAddr(sreg, addr), &word, sizeof(word));
+}
+
 auto CPU::CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t
 {
     return addr + state.sregs[sreg] * 0x10;
+}
+
+void CPU::FlushFlags()
+{
+    enum Flags {
+        CF = 1,
+        PF = 4,
+        AF = 16,
+        ZF = 64,
+        SF = 128,
+        OF = 0x800,
+        FlagsMask = CF | PF | AF | ZF | SF | OF
+    };
+    auto& cache = flagsCache;
+    auto carry = cache.r < cache.a;
+    auto parity = GetParity(cache.r);
+    auto acarry = !!((cache.a ^ cache.b ^ cache.r) & 0x10);
+    auto zero = !cache.r;
+    auto sign = cache.r >= 0x8000;
+    bool ovfl = ((cache.a ^ cache.b) >> 15) ^ sign ^ carry;
+    state.flags ^= state.flags & FlagsMask;
+    state.flags |= CF * carry | PF * parity | AF * acarry | ZF * zero | SF * sign | OF * ovfl;
 }
 
 } // namespace x86emu
