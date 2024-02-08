@@ -5,7 +5,7 @@ using namespace std;
 
 struct Hook : x86emu::IIOHook {
     unsigned char mem[16] = {
-        3, 0x06, 4, 0, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144
+        5, 0x06, 4, 0, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144
     };
 public:
     void ReadMem(x86emu::CPUState &state, void *data, size_t size, uint32_t addr)
@@ -45,6 +45,7 @@ int main()
     state.gpr[x86emu::AX] = 0x55AA;
     state.sregs[x86emu::CS] = 0;
     cpu.Step();
+    cout << hex;
     cout << "AX: " << state.gpr[x86emu::AX] << "\n";
     cout << "CX: " << state.gpr[x86emu::CX] << "\n";
     cout << "DX: " << state.gpr[x86emu::DX] << "\n";

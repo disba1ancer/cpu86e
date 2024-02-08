@@ -5,11 +5,9 @@ namespace x86emu {
 namespace {
 
 enum Prefix {
-    P66 = 1,
-    P67 = 2,
-    PF0 = 4,
-    PF2 = 8,
-    PF3 = 16
+    PF0 = 1,
+    PF2 = 2,
+    PF3 = 3
 };
 
 enum DoOpcodeResult {
@@ -44,10 +42,35 @@ bool GetParity(uint16_t val)
     return (val & 0x1) ^ ((val & 0x2) >> 1) ^ 1;
 }
 
+constexpr auto RegSize = sizeof(RegVal);
+constexpr auto RegBits = 16;
+
+auto SignExtend(RegVal in, int logSz) -> RegVal
+{
+    auto smask = 0x80 << (logSz * 8);
+    auto mask = 2 * smask - 1;
+    return ((in & mask) ^ smask) - smask;
+}
+
+enum Flags {
+    CF = 1,
+    PF = 4,
+    AF = 16,
+    ZF = 64,
+    SF = 128,
+    OF = 0x800,
+    FlagsMask = CF | PF | AF | ZF | SF | OF
+};
+
+bool GetCF(FlagsCache& cache)
+{
+    return cache.r < cache.ops[0] || cache.r < cache.ops[1];
+}
+
 }
 
 CPU::CPU(IIOHook& hook) :
-    CPU({.sregs = {0, 0xFFFF}, .ip = 0}, hook)
+    CPU({.ip = 0, .sregs = {0, 0xFFFF}}, hook)
 {}
 
 CPU::CPU(const CPUState &initState, IIOHook& hook) :
@@ -82,8 +105,10 @@ void CPU::SetHook(IIOHook *argHook)
 }
 
 struct CPU::Prefixes {
+    unsigned grp1:2;
     unsigned segment:3;
-    unsigned prefix:5;
+    unsigned grp3:1;
+    unsigned grp4:1;
 };
 
 void CPU::Run()
@@ -106,7 +131,7 @@ struct CPU::Operations {
     };
 
     struct ModRM {
-        uint16_t addr;
+        RegVal addr;
         uint8_t type;
         uint8_t reg;
     };
@@ -179,80 +204,106 @@ struct CPU::Operations {
         return SegmentRegister(prefixes.segment);
     }
 
-    static void ReadRMB(CPU* cpu, Prefixes prefixes, ModRM modrm, FlagsCache& cache)
+    static void ReadRM(CPU* cpu, Prefixes prefixes, ModRM modrm, FlagsCache& cache, int logSz)
     {
         auto regs = cpu->state.gpr;
         if (modrm.type != Reg) {
             auto sreg = GetSeg(prefixes, modrm.type);
-            cache.a = cpu->ReadByte(sreg, modrm.addr) * 0x100;
+            cache.ops[0] = cpu->ReadMem(sreg, modrm.addr, logSz);
         } else {
-            cache.a = (regs[modrm.addr & 3] << ((modrm.addr * 2 & 8) ^ 8)) & 0xFF00;
+            auto rh = (logSz == 0) * (modrm.addr & 4);
+            auto shift = 2 * rh;
+            cache.ops[0] = SignExtend(regs[modrm.addr ^ rh] >> shift, logSz);
         }
-        cache.b = (regs[modrm.reg & 3] << ((modrm.reg * 2 & 8) ^ 8)) & 0xFF00;
+        auto rh = (logSz == 0) * (modrm.reg & 4);
+        auto shift = 2 * rh;
+        cache.ops[1] = SignExtend(regs[modrm.reg ^ rh] >> shift, logSz);
     }
 
-    static void ReadRM(CPU* cpu, Prefixes prefixes, ModRM modrm, FlagsCache& cache)
+    static void WriteRM(CPU* cpu, Prefixes prefixes, ModRM modrm, FlagsCache& cache, int logSz, bool reg)
     {
         auto regs = cpu->state.gpr;
-        if (modrm.type != Reg) {
-            auto sreg = GetSeg(prefixes, modrm.type);
-            cache.a = cpu->ReadWord(sreg, modrm.addr);
-        } else {
-            cache.a = regs[modrm.addr];
-        }
-        cache.b = regs[modrm.reg];
-    }
-
-    static void WriteRMB(CPU* cpu, Prefixes prefixes, ModRM modrm, FlagsCache& cache, bool reg)
-    {
-        auto regs = cpu->state.gpr;
+        auto mask = (0x100 << (logSz * 8)) - 1;
+        cache.r = SignExtend(cache.r, logSz);
         if (reg) {
-            regs[modrm.reg & 3] &= 0xFF00 >> (modrm.reg * 2 & 8);
-            regs[modrm.reg & 3] |= cache.r >> ((modrm.reg * 2 & 8) ^ 8);
+            auto rh = (logSz == 0) * (modrm.reg & 4);
+            auto shift = 2 * rh;
+            mask <<= shift;
+            auto& r = regs[modrm.reg ^ rh];
+            r ^= (r & mask) ^ ((cache.r << shift) & mask);
         } else if (modrm.type != Reg) {
             auto sreg = GetSeg(prefixes, modrm.type);
-            cpu->WriteByte(sreg, modrm.addr, cache.r >> 8);
+            cpu->WriteMem(sreg, modrm.addr, logSz, cache.r);
         } else {
-            regs[modrm.addr & 3] &= 0xFF00 >> (modrm.addr * 2 & 8);
-            regs[modrm.addr & 3] |= cache.r >> ((modrm.addr * 2 & 8) ^ 8);
+            auto rh = (logSz == 0) * (modrm.reg & 4);
+            auto shift = 2 * rh;
+            mask <<= shift;
+            auto& r = regs[modrm.addr ^ rh];
+            r ^= (r & mask) ^ ((cache.r << shift) & mask);
         }
     }
 
-    static void WriteRM(CPU* cpu, Prefixes prefixes, ModRM modrm, FlagsCache& cache, bool reg)
+    static void MainBinOp(CPU* cpu, FlagsCache& cache, uint8_t op)
     {
-        auto regs = cpu->state.gpr;
-        if (reg) {
-            regs[modrm.reg] = cache.r;
-        } else if (modrm.type != Reg) {
-            auto sreg = GetSeg(prefixes, modrm.type);
-            cpu->WriteWord(sreg, modrm.addr, cache.r);
-        } else {
-            regs[modrm.addr] = cache.r;
-        }
-    }
-
-    static void AddB(CPU* cpu, Prefixes prefixes, uint8_t op)
-    {
-        ModRM operands = GetModRM(cpu);
-        FlagsCache cache;
+        enum Ops { Add, Or, Adc, Sbb, And, Sub, Xor, Cmp };
         cache.type = cache.Arithmetic;
-        ReadRMB(cpu, prefixes, operands, cache);
-        cache.r = cache.a + cache.b;
-        WriteRMB(cpu, prefixes, operands, cache, op & 2);
-        cache.a = (cache.a >> 8) * 0x101;
-        cache.b = (cache.b >> 8) * 0x101;
-        cache.r = (cache.r >> 8) * 0x101;
+        auto carry = GetCF(cpu->flagsCache);
+        switch (op >> 3) {
+        case Add:
+            cache.r = cache.ops[0] + cache.ops[1];
+            break;
+        case Or:
+            cache.type = cache.Logical;
+            cache.r = cache.ops[0] | cache.ops[1];
+            break;
+        case Adc:
+            cache.r = cache.ops[0] + cache.ops[1] + carry;
+            break;
+        case Sbb:
+            cache.ops[!(op & 2)] = -cache.ops[!(op & 2)];
+            cache.r = cache.ops[0] + cache.ops[1];
+            break;
+        case And:
+            cache.type = cache.Logical;
+            cache.r = cache.ops[0] & cache.ops[1];
+            break;
+        case Sub:
+            cache.ops[!(op & 2)] = -cache.ops[!(op & 2)];
+            cache.r = cache.ops[0] + cache.ops[1] - carry;
+            break;
+        case Xor:
+            cache.type = cache.Logical;
+            cache.r = cache.ops[0] ^ cache.ops[1];
+            break;
+        case Cmp:
+            break;
+        }
+    }
+
+    static void Add(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        ModRM modRM = GetModRM(cpu);
+        FlagsCache cache;
+        int logSz = op & 1;
+        ReadRM(cpu, prefixes, modRM, cache, logSz);
+        cache.type = cache.Arithmetic;
+        cache.r = cache.ops[0] + cache.ops[1];
+        WriteRM(cpu, prefixes, modRM, cache, logSz, op & 2);
         cpu->flagsCache = cache;
     }
 
-    static void AddW(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static void AddAccImm(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
-        ModRM operands = GetModRM(cpu);
+        prefixes.segment = CS;
+        ModRM modRM = {.type = Addr, .reg = AX};
         FlagsCache cache;
+        int logSz = op & 1;
+        modRM.addr = cpu->state.ip,
+        cpu->state.ip += 1 << logSz;
+        ReadRM(cpu, prefixes, modRM, cache, logSz);
         cache.type = cache.Arithmetic;
-        ReadRM(cpu, prefixes, operands, cache);
-        cache.r = cache.a + cache.b;
-        WriteRM(cpu, prefixes, operands, cache, op & 2);
+        cache.r = cache.ops[0] + cache.ops[1];
+        WriteRM(cpu, prefixes, modRM, cache, logSz, true);
         cpu->flagsCache = cache;
     }
 
@@ -261,7 +312,7 @@ struct CPU::Operations {
 };
 
 CPU::Operations::Op* CPU::Operations::map1[256] = {
-    AddB, AddW, AddB, AddW
+    Add, Add, Add, Add, AddAccImm, AddAccImm
 };
 
 int CPU::DoOpcode()
@@ -275,7 +326,7 @@ int CPU::DoOpcode()
 
 auto CPU::ParsePrefixes() -> Prefixes
 {
-    Prefixes prefixes = { SegReserve, 0 };
+    Prefixes prefixes = { 0, SegReserve };
     auto op = ReadByte(CS, state.ip);
     while (true) {
         switch (op) {
@@ -298,19 +349,19 @@ auto CPU::ParsePrefixes() -> Prefixes
             prefixes.segment = GS;
             break;
         case 0x66:
-            prefixes.prefix |= P66;
+            prefixes.grp3 = 1;
             break;
         case 0x67:
-            prefixes.prefix |= P67;
+            prefixes.grp4 = 1;
             break;
         case 0xF0:
-            prefixes.prefix |= PF0;
+            prefixes.grp1 = PF0;
             break;
         case 0xF2:
-            prefixes.prefix |= PF2;
+            prefixes.grp1 = PF2;
             break;
         case 0xF3:
-            prefixes.prefix |= PF3;
+            prefixes.grp1 = PF3;
             break;
         default:
             return prefixes;
@@ -333,6 +384,20 @@ uint16_t CPU::ReadWord(SegmentRegister sreg, uint16_t addr)
     return word[1] * 0x100 + word[0];
 }
 
+auto CPU::ReadMem(SegmentRegister sreg, uint16_t addr, int logSz) -> RegVal
+{
+    RegVal result;
+    switch(logSz) {
+    case 0:
+        result = ReadByte(sreg, addr);
+        break;
+    case 1:
+        result = ReadWord(sreg, addr);
+        break;
+    }
+    return SignExtend(result, logSz);
+}
+
 void CPU::WriteByte(SegmentRegister sreg, uint16_t addr, uint8_t val)
 {
     unsigned char byte = val;
@@ -341,8 +406,24 @@ void CPU::WriteByte(SegmentRegister sreg, uint16_t addr, uint8_t val)
 
 void CPU::WriteWord(SegmentRegister sreg, uint16_t addr, uint16_t val)
 {
-    unsigned char word[2] = { static_cast<unsigned char>(val & 0xFF), static_cast<unsigned char>(val >> 8) };
+    unsigned char word[2];
+    for (int i = 0; i < sizeof(val); ++i) {
+        word[i] = val;
+        val >>= 8;
+    }
     hook->WriteMem(state, CalcAddr(sreg, addr), &word, sizeof(word));
+}
+
+void CPU::WriteMem(SegmentRegister sreg, uint16_t addr, int logSz, RegVal val)
+{
+    switch(logSz) {
+    case 0:
+        WriteByte(sreg, addr, val);
+        break;
+    case 1:
+        WriteWord(sreg, addr, val);
+        break;
+    }
 }
 
 auto CPU::CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t
@@ -352,22 +433,13 @@ auto CPU::CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t
 
 void CPU::FlushFlags()
 {
-    enum Flags {
-        CF = 1,
-        PF = 4,
-        AF = 16,
-        ZF = 64,
-        SF = 128,
-        OF = 0x800,
-        FlagsMask = CF | PF | AF | ZF | SF | OF
-    };
     auto& cache = flagsCache;
-    auto carry = cache.r < cache.a;
+    auto carry = GetCF(cache);
     auto parity = GetParity(cache.r);
-    auto acarry = !!((cache.a ^ cache.b ^ cache.r) & 0x10);
+    auto acarry = !!((cache.ops[0] ^ cache.ops[1] ^ cache.r) & 0x10);
     auto zero = !cache.r;
-    auto sign = cache.r >= 0x8000;
-    bool ovfl = ((cache.a ^ cache.b) >> 15) ^ sign ^ carry;
+    bool sign = cache.r >> (RegBits - 1);
+    bool ovfl = ((cache.ops[0] ^ cache.ops[1]) >> (RegBits - 1)) ^ sign ^ carry;
     state.flags ^= state.flags & FlagsMask;
     state.flags |=
         (CF * carry | OF * ovfl) * (cache.type == cache.Arithmetic) |
