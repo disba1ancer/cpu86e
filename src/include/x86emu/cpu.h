@@ -40,17 +40,6 @@ struct CPUState {
     uint16_t sregs[6];
 };
 
-struct FlagsCache {
-    RegVal ops[2], r;
-    enum Type {
-        None,
-        Logical,
-        Arithmetic,
-    };
-    uint8_t opsz:2;
-    uint8_t type:2;
-};
-
 class CPU
 {
 public:
@@ -66,6 +55,7 @@ public:
 private:
     struct Prefixes;
     struct Operations;
+    struct Calc;
     int DoOpcode();
     auto ParsePrefixes() -> Prefixes;
     auto ReadByte(SegmentRegister sreg, uint16_t addr) -> uint8_t;
@@ -77,10 +67,8 @@ private:
     void PushSreg(SegmentRegister sreg);
     void PopSreg(SegmentRegister sreg);
     auto CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t;
-    void FlushFlags();
 
     CPUState state;
-    FlagsCache flagsCache;
     IIOHook* hook;
 };
 

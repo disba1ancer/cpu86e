@@ -34,13 +34,12 @@ char8_t map[] = {
     0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1,
 };
 
-
 constexpr auto RegSize = sizeof(RegVal);
 constexpr auto RegBits = 16;
 
 auto SignExtend(RegVal in, int logSz) -> RegVal
 {
-    auto smask = 0x80 << (logSz * 8);
+    auto smask = 0x80 << ((8 << logSz) - 8);
     auto mask = 2 * smask - 1;
     return ((in & mask) ^ smask) - smask;
 }
@@ -63,7 +62,6 @@ CPU::CPU(IIOHook& hook) :
 
 CPU::CPU(const CPUState &initState, IIOHook& hook) :
     state(initState),
-    flagsCache({}),
     hook(&hook)
 {}
 
@@ -107,8 +105,100 @@ void CPU::Run()
 void CPU::Step()
 {
     DoOpcode();
-    FlushFlags();
 }
+
+struct CPU::Calc {
+    RegVal n[2];
+    RegVal result;
+    RegVal flags = 0;
+    RegVal flagsMask = FlagsMask;
+    int logSz;
+
+    Calc(int logSz) :
+        logSz(logSz)
+    {}
+
+    auto GetFlags(RegVal f) -> RegVal
+    {
+        return f ^ ((f ^ flags) & flagsMask);
+    }
+
+    static bool GetParity(RegVal val)
+    {
+        val &= 0xFF;
+        val = (val & 0xF) ^ ((val & 0xF0) >> 4);
+        val = (val & 0x3) ^ ((val & 0xC) >> 2);
+        return (val & 0x1) ^ ((val & 0x2) >> 1) ^ 1;
+    }
+
+    static bool GetSign(RegVal val)
+    {
+        return val >> (RegBits - 1);
+    }
+
+    void SetResultFlags() {
+        flags |= PF * GetParity(result) | ZF * !result | SF * GetSign(result);
+    }
+
+    void SetOperandFlags(bool c) {
+        RegVal a = ~n[0];
+        RegVal b = n[1];
+        bool carry = (a < b) || (c && (a == b));
+        auto mask = (0x80 << ((8 << logSz) - 8)) - 1;
+        a &= mask;
+        b &= mask;
+        bool ovf = ((a < b) || (c && (a == b))) ^ carry;
+        a &= 0xF;
+        b &= 0xF;
+        bool af = (a < b) || (c && (a == b));
+        flags |= carry * CF | ovf * OF | af * AF;
+    }
+
+    enum Op { Add, Or, Adc, Sbb, And, Sub, Xor, Cmp };
+
+    Op DoOp(uint8_t op_, bool cf = false)
+    {
+        bool inverse = !!(op_ & 6);
+        auto op = Op((op_ >> 3) & 7);
+        DoOp(op, inverse, cf);
+        return op;
+    }
+
+    void DoOp(Op op, bool inverse = false, bool cf = false)
+    {
+        switch (op) {
+        case Add:
+            result = n[0] + n[1];
+            SetOperandFlags(false);
+            break;
+        case Or:
+            result = n[0] | n[1];
+            break;
+        case Adc:
+            result = n[0] + n[1] + cf;
+            SetOperandFlags(cf);
+            break;
+        case Sbb:
+            n[inverse] = ~n[inverse];
+            result = ~(n[0] + n[1] + cf);
+            SetOperandFlags(cf);
+            break;
+        case And:
+            result = n[0] & n[1];
+            break;
+        case Cmp:
+        case Sub:
+            n[inverse] = ~n[inverse];
+            result = ~(n[0] + n[1]);
+            SetOperandFlags(false);
+            break;
+        case Xor:
+            result = n[0] ^ n[1];
+            break;
+        }
+        SetResultFlags();
+    }
+};
 
 struct CPU::Operations {
 
@@ -192,124 +282,92 @@ struct CPU::Operations {
         return SegmentRegister(prefixes.segment);
     }
 
-    static void ReadRM(CPU* cpu, Prefixes prefixes, ModRM modrm, FlagsCache& cache)
+    static void ReadRM(CPU* cpu, Prefixes prefixes, ModRM modrm, Calc& calc)
     {
         auto regs = cpu->state.gpr;
         if (modrm.type != Reg) {
             auto sreg = GetSeg(prefixes, modrm.type);
-            cache.ops[0] = cpu->ReadMem(sreg, modrm.addr, cache.opsz);
+            calc.n[0] = cpu->ReadMem(sreg, modrm.addr, calc.logSz);
         } else {
-            auto rh = (cache.opsz == 0) * (modrm.addr & 4);
+            auto rh = (calc.logSz == 0) * (modrm.addr & 4);
             auto shift = 2 * rh;
-            cache.ops[0] = SignExtend(regs[modrm.addr ^ rh] >> shift, cache.opsz);
+            calc.n[0] = SignExtend(regs[modrm.addr ^ rh] >> shift, calc.logSz);
         }
-        auto rh = (cache.opsz == 0) * (modrm.reg & 4);
+        auto rh = (calc.logSz == 0) * (modrm.reg & 4);
         auto shift = 2 * rh;
-        cache.ops[1] = SignExtend(regs[modrm.reg ^ rh] >> shift, cache.opsz);
+        calc.n[1] = SignExtend(regs[modrm.reg ^ rh] >> shift, calc.logSz);
     }
 
-    static void WriteRM(CPU* cpu, Prefixes prefixes, ModRM modrm, FlagsCache& cache, bool reg)
+    static void WriteRM(CPU* cpu, Prefixes prefixes, ModRM modrm, Calc& cache, bool reg)
     {
         auto regs = cpu->state.gpr;
-        auto mask = (0x100 << (cache.opsz * 8)) - 1;
-        cache.r = SignExtend(cache.r, cache.opsz);
+        auto mask = (0x100 << (cache.logSz * 8)) - 1;
         if (reg) {
-            auto rh = (cache.opsz == 0) * (modrm.reg & 4);
+            auto rh = (cache.logSz == 0) * (modrm.reg & 4);
             auto shift = 2 * rh;
             mask <<= shift;
             auto& r = regs[modrm.reg ^ rh];
-            r ^= (r & mask) ^ ((cache.r << shift) & mask);
+            r ^= (r & mask) ^ ((cache.result << shift) & mask);
         } else if (modrm.type != Reg) {
             auto sreg = GetSeg(prefixes, modrm.type);
-            cpu->WriteMem(sreg, modrm.addr, cache.opsz, cache.r);
+            cpu->WriteMem(sreg, modrm.addr, cache.logSz, cache.result);
         } else {
-            auto rh = (cache.opsz == 0) * (modrm.reg & 4);
+            auto rh = (cache.logSz == 0) * (modrm.reg & 4);
             auto shift = 2 * rh;
             mask <<= shift;
             auto& r = regs[modrm.addr ^ rh];
-            r ^= (r & mask) ^ ((cache.r << shift) & mask);
-        }
-    }
-
-    static void DoBinOp(RegVal a, RegVal b)
-    {}
-
-    static void MainBinOp(CPU* cpu, FlagsCache& cache, uint8_t op)
-    {
-        enum Ops { Add, Or, Adc, Sbb, And, Sub, Xor, Cmp };
-        cache.type = cache.Arithmetic;
-        bool inverse = !(op & 6);
-        switch ((op >> 3) & 7) {
-        case Add:
-            cache.r = cache.ops[0] + cache.ops[1];
-            break;
-        case Or:
-            cache.type = cache.Logical;
-            cache.r = cache.ops[0] | cache.ops[1];
-            break;
-        case Adc:
-            cache.r = cache.ops[0] + cache.ops[1];
-            break;
-        case Sbb:
-            cache.ops[!inverse] = ~cache.ops[!inverse];
-            cache.r = ~(cache.ops[0] + cache.ops[1]);
-            break;
-        case And:
-            cache.type = cache.Logical;
-            cache.r = cache.ops[0] & cache.ops[1];
-            break;
-        case Sub:
-            cache.ops[!inverse] = ~cache.ops[!inverse];
-            cache.r = ~(cache.ops[0] + cache.ops[1]);
-            break;
-        case Xor:
-            cache.type = cache.Logical;
-            cache.r = cache.ops[0] ^ cache.ops[1];
-            break;
-        case Cmp:
-            cache.r = cache.ops[inverse];
-            break;
+            r ^= (r & mask) ^ ((cache.result << shift) & mask);
         }
     }
 
     static void BiOp(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
-        FlagsCache cache;
-        cache.opsz = op & 1;
-        ReadRM(cpu, prefixes, modRM, cache);
-        MainBinOp(cpu, cache, op);
-        WriteRM(cpu, prefixes, modRM, cache, op & 2);
-        cpu->flagsCache = cache;
+        auto& flags =cpu->state.flags;
+        Calc calc(op & 1);
+        ReadRM(cpu, prefixes, modRM, calc);
+        if (calc.DoOp(op, flags & CF) != calc.Cmp) {
+            WriteRM(cpu, prefixes, modRM, calc, op & 2);
+        }
+        flags = calc.GetFlags(flags);
     }
 
     static void BiOpAI(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         prefixes.segment = CS;
         ModRM modRM = {.type = Addr, .reg = AX};
-        FlagsCache cache;
-        cache.opsz = op & 1;
+        auto& flags =cpu->state.flags;
+        Calc calc(op & 1);
         modRM.addr = cpu->state.ip,
-        cpu->state.ip += 1 << cache.opsz;
-        ReadRM(cpu, prefixes, modRM, cache);
-        MainBinOp(cpu, cache, op);
-        WriteRM(cpu, prefixes, modRM, cache, true);
-        cpu->flagsCache = cache;
+        cpu->state.ip += 1 << calc.logSz;
+        ReadRM(cpu, prefixes, modRM, calc);
+        calc.DoOp(op, flags & CF);
+        if (calc.DoOp(op, flags & CF) != calc.Cmp) {
+            WriteRM(cpu, prefixes, modRM, calc, true);
+        }
+        flags = calc.GetFlags(flags);
+    }
+
+    static void PushVal(CPU* cpu, int logSz, RegVal val)
+    {
+        cpu->WriteMem(SS, cpu->state.gpr[SP] -= 1 << logSz, logSz, val);
+    }
+
+    static auto PopVal(CPU* cpu, int logSz) -> RegVal
+    {
+        RegVal result = cpu->ReadMem(SS, cpu->state.gpr[SP], logSz);
+        cpu->state.gpr[SP] += 1 << logSz;
+        return result;
     }
 
     static void PushSReg(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
-        auto logSz = 1;
-        RegVal val = cpu->state.sregs[(op >> 3) & 3];
-        cpu->WriteMem(SS, cpu->state.gpr[SP] -= 1 << logSz, logSz, val);
+        PushVal(cpu, 1, cpu->state.sregs[(op >> 3) & 3]);
     }
 
     static void PopSReg(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
-        auto logSz = 1;
-        RegVal val = cpu->ReadMem(SS, cpu->state.gpr[SP], logSz);
-        cpu->state.sregs[(op >> 3) & 3] = val;
-        cpu->state.gpr[SP] += 1 << logSz;
+        cpu->state.sregs[(op >> 3) & 3] = PopVal(cpu, 1);
     }
 
     static void Nop(CPU*, Prefixes, uint8_t)
@@ -317,7 +375,6 @@ struct CPU::Operations {
 
     static void AAA(CPU* cpu, Prefixes, uint8_t)
     {
-        cpu->FlushFlags();
         if ((cpu->state.gpr[AX] & 0xF) > 9 || (cpu->state.flags & AF)) {
             cpu->state.gpr[AX] += 0x106;
             cpu->state.flags |= AF | CF;
@@ -329,7 +386,6 @@ struct CPU::Operations {
 
     static void AAS(CPU* cpu, Prefixes, uint8_t)
     {
-        cpu->FlushFlags();
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
         if ((regs[AX] & 0xF) > 9 || (flags & AF)) {
@@ -345,7 +401,6 @@ struct CPU::Operations {
 
     static void DAA(CPU* cpu, Prefixes, uint8_t)
     {
-        cpu->FlushFlags();
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
         auto tmp = regs[AX] & 0xFF;
@@ -361,7 +416,6 @@ struct CPU::Operations {
 
     static void DAS(CPU* cpu, Prefixes, uint8_t)
     {
-        cpu->FlushFlags();
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
         auto tmp = regs[AX] & 0xFF;
@@ -382,42 +436,63 @@ struct CPU::Operations {
         flags |= AF * a | CF * c2;
     }
 
-    static void Inc(CPU* cpu, Prefixes, uint8_t op)
+    static void IncDec(CPU* cpu, Prefixes, uint8_t op)
     {
-        cpu->FlushFlags();
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
-        bool oldCF = (flags & CF);
-        FlagsCache cache;
-        cache.type = cache.Arithmetic;
-        cache.opsz = 1;
-        cache.ops[0] = regs[op & 7];
-        cache.ops[1] = 1;
-        cache.r = cache.ops[0] + 1;
-        regs[op & 7] = cache.r;
-        cpu->flagsCache = cache;
-        cpu->FlushFlags();
-        flags ^= flags & CF;
-        flags |= CF * oldCF;
+        Calc calc(1);
+        calc.n[0] = regs[op & 7];
+        calc.n[1] = 1;
+        calc.DoOp(op & 8 ? calc.Sub : calc.Add);
+        calc.flagsMask ^= CF;
+        regs[op & 7] = calc.result;
+        flags = calc.GetFlags(flags);
     }
 
-    static void Dec(CPU* cpu, Prefixes, uint8_t op)
+    static void PushReg(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
-        cpu->FlushFlags();
-        auto regs = cpu->state.gpr;
+        PushVal(cpu, 1, cpu->state.gpr[op & 3]);
+    }
+
+    static void PopReg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        cpu->state.gpr[op & 3] = PopVal(cpu, 1);
+    }
+
+    static void Jcc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
         auto& flags = cpu->state.flags;
-        bool oldCF = (flags & CF);
-        FlagsCache cache;
-        cache.type = cache.Arithmetic;
-        cache.opsz = 1;
-        cache.ops[0] = ~regs[op & 7];
-        cache.ops[1] = 1;
-        cache.r = ~(cache.ops[0] + 1);
-        regs[op & 7] = cache.r;
-        cpu->flagsCache = cache;
-        cpu->FlushFlags();
-        flags ^= flags & CF;
-        flags |= CF * oldCF;
+        auto off = cpu->ReadByte(CS, ip++);
+        bool cond;
+        switch ((op >> 1) & 0x7) {
+        case 0:
+            cond = flags & OF;
+            break;
+        case 1:
+            cond = flags & CF;
+            break;
+        case 2:
+            cond = flags & ZF;
+            break;
+        case 3:
+            cond = flags & (CF | ZF);
+            break;
+        case 4:
+            cond = flags & SF;
+            break;
+        case 5:
+            cond = flags & PF;
+            break;
+        case 6:
+            cond = !(flags & OF) != !(flags & SF);
+            break;
+        case 7:
+            cond = !(flags & OF) == !(flags & SF) && (flags & ZF);
+            break;
+        }
+        cond = cond ^ (op & 1);
+        ip += off * cond;
     }
 
     using Op = void(CPU*, Prefixes, uint8_t op);
@@ -425,38 +500,38 @@ struct CPU::Operations {
 };
 
 CPU::Operations::Op* CPU::Operations::map1[256] = {
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, Nop,
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg,
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg,
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg,
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, DAA,
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, DAS,
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, AAA,
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, AAS,
-    Inc, Inc, Inc, Inc, Inc, Inc, Inc, Inc,
-    Dec, Dec, Dec, Dec, Dec, Dec, Dec, Dec,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    Nop, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, Nop, // 0
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 8
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x10
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x18
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, DAA, // 0x20
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, DAS, // 0x28
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, AAA, // 0x30
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, AAS, // 0x38
+    IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, // 0x40
+    IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, // 0x48
+    PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, // 0x50
+    PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, // 0x58
+    Nop, Nop, Nop, Nop, 0, 0, 0, 0, // 0x60
+    Nop, Nop, Nop, Nop, Nop, Nop, Nop, Nop, // 0x68
+    Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, // 0x70
+    Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, // 0x78
+    0, 0, 0, 0, 0, 0, 0, 0, // 0x80
+    0, 0, 0, 0, 0, 0, 0, 0, // 0x88
+    Nop, 0, 0, 0, 0, 0, 0, 0, // 0x90
+    0, 0, 0, 0, 0, 0, 0, 0, // 0x98
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xA8
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xA0
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xB8
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xB0
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xC8
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xC0
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xD0
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xD8
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xE0
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xE8
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xF0
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xF8
 };
 
 int CPU::DoOpcode()
@@ -573,59 +648,6 @@ void CPU::WriteMem(SegmentRegister sreg, uint16_t addr, int logSz, RegVal val)
 auto CPU::CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t
 {
     return addr + state.sregs[sreg] * 0x10;
-}
-
-namespace {
-
-bool GetCF(FlagsCache& cache)
-{
-    return (cache.type == cache.Arithmetic) && RegVal(~cache.ops[0]) < cache.ops[1];
-}
-
-bool GetAF(FlagsCache& cache)
-{
-    return (~cache.ops[0] & 0xf) < (cache.ops[1] & 0xf);
-}
-
-bool GetParity(RegVal val)
-{
-    val &= 0xFF;
-    val = (val & 0xF) ^ ((val & 0xF0) >> 4);
-    val = (val & 0x3) ^ ((val & 0xC) >> 2);
-    return (val & 0x1) ^ ((val & 0x2) >> 1) ^ 1;
-}
-
-bool GetSign(RegVal val)
-{
-    return val >> (RegBits - 1);
-}
-
-bool GetOverflow(FlagsCache& cache)
-{
-    auto mask = (0x80 << ((8 << cache.opsz) - 8)) - 1;
-    return (cache.type == cache.Arithmetic) &&
-        (((~cache.ops[0] & mask) < (cache.ops[1] & mask)) ^ GetCF(cache));
-}
-
-}
-
-void CPU::FlushFlags()
-{
-    auto& cache = flagsCache;
-    if (cache.type == cache.None) {
-        return;
-    }
-    auto carry = GetCF(cache);
-    auto parity = GetParity(cache.r);
-    auto acarry = GetAF(cache);
-    auto zero = !cache.r;
-    auto sign = GetSign(cache.r);
-    auto ovfl = GetOverflow(cache);
-    state.flags ^= state.flags & FlagsMask;
-    state.flags |=
-        CF * carry | PF * parity | AF * acarry |
-        ZF * zero | SF * sign | OF * ovfl;
-    cache.type = cache.None;
 }
 
 } // namespace x86emu
