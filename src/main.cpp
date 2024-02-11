@@ -5,7 +5,7 @@ using namespace std;
 
 struct Hook : x86emu::IIOHook {
     unsigned char mem[16] = {
-        5, 0x06, 4, 0, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144
+        0x48, 0x06, 4, 0, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144, 144
     };
 public:
     void ReadMem(x86emu::CPUState &state, void *data, size_t size, uint32_t addr)
@@ -42,7 +42,7 @@ int main()
     Hook hook;
     x86emu::CPU cpu(hook);
     auto& state = cpu.State();
-    state.gpr[x86emu::AX] = 0x55AA;
+    state.gpr[x86emu::AX] = 0x8000;
     state.sregs[x86emu::CS] = 0;
     cpu.Step();
     cout << hex;

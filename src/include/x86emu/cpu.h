@@ -46,7 +46,9 @@ struct FlagsCache {
         None,
         Logical,
         Arithmetic,
-    } type;
+    };
+    uint8_t opsz:2;
+    uint8_t type:2;
 };
 
 class CPU
