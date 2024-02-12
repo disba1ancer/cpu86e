@@ -37,11 +37,23 @@ char8_t map[] = {
 constexpr auto RegSize = sizeof(RegVal);
 constexpr auto RegBits = 16;
 
+auto ZeroExtend(RegVal in, int logSz) -> RegVal
+{
+    auto smask = 0x80 << ((8 << logSz) - 7);
+    auto mask = smask - 1;
+    return in & mask;
+}
+
 auto SignExtend(RegVal in, int logSz) -> RegVal
 {
     auto smask = 0x80 << ((8 << logSz) - 8);
     auto mask = 2 * smask - 1;
     return ((in & mask) ^ smask) - smask;
+}
+
+static bool GetSign(RegVal val, int logSz)
+{
+    return val >> ((8 << logSz) - 1);
 }
 
 enum Flags {
@@ -99,7 +111,7 @@ struct CPU::Prefixes {
 
 void CPU::Run()
 {
-
+    while (DoOpcode() == Normal) {}
 }
 
 void CPU::Step()
@@ -131,9 +143,9 @@ struct CPU::Calc {
         return (val & 0x1) ^ ((val & 0x2) >> 1) ^ 1;
     }
 
-    static bool GetSign(RegVal val)
+    bool GetSign(RegVal val)
     {
-        return val >> (RegBits - 1);
+        return ::x86emu::GetSign(val, logSz);
     }
 
     void SetResultFlags() {
@@ -166,6 +178,8 @@ struct CPU::Calc {
 
     void DoOp(Op op, bool inverse = false, bool cf = false)
     {
+        n[0] = SignExtend(n[0], logSz);
+        n[1] = SignExtend(n[1], logSz);
         switch (op) {
         case Add:
             result = n[0] + n[1];
@@ -202,13 +216,12 @@ struct CPU::Calc {
 
 struct CPU::Operations {
 
-    enum RMType {
-        Addr,
-        AddrSS,
-        Reg
-    };
-
     struct ModRM {
+        enum RMType {
+            Addr,
+            AddrSS,
+            Reg
+        };
         RegVal addr;
         uint8_t type;
         uint8_t reg;
@@ -221,10 +234,10 @@ struct CPU::Operations {
         result.reg = (modRM >> 3) & 7;
         if ((modRM & 0xC0) == 0xC0) {
             result.addr = modRM & 7;
-            result.type = Reg;
+            result.type = result.Reg;
             return result;
         }
-        result.type = Addr;
+        result.type = result.Addr;
         auto regs = cpu->state.gpr;
         switch (modRM & 7) {
         case 0:
@@ -234,11 +247,11 @@ struct CPU::Operations {
             result.addr = regs[BX] + regs[DI];
             break;
         case 2:
-            result.type = AddrSS;
+            result.type = result.AddrSS;
             result.addr = regs[BP] + regs[SI];
             break;
         case 3:
-            result.type = AddrSS;
+            result.type = result.AddrSS;
             result.addr = regs[BP] + regs[DI];
             break;
         case 4:
@@ -253,7 +266,7 @@ struct CPU::Operations {
                 modRM |= 0x80;
                 break;
             }
-            result.type = AddrSS;
+            result.type = result.AddrSS;
             result.addr = regs[BP];
             break;
         case 7:
@@ -277,50 +290,64 @@ struct CPU::Operations {
     static SegmentRegister GetSeg(Prefixes prefixes, int type = 0)
     {
         if (prefixes.segment == SegReserve) {
-            return SegmentRegister(SS + (type != AddrSS));
+            return SegmentRegister(SS + (type != ModRM::AddrSS));
         }
         return SegmentRegister(prefixes.segment);
     }
 
-    static void ReadRM(CPU* cpu, Prefixes prefixes, ModRM modrm, Calc& calc)
+    static auto ReadReg(CPU* cpu, int reg, int logSz) -> RegVal
+    {
+        return ReadReg(cpu, Register(reg), logSz);
+    }
+
+    static auto ReadReg(CPU* cpu, Register reg, int logSz) -> RegVal
     {
         auto regs = cpu->state.gpr;
-        if (modrm.type != Reg) {
+        auto rh = (logSz == 0) * (reg & 4);
+        auto shift = 2 * rh;
+        return regs[reg ^ rh] >> shift;
+    }
+
+    static void WriteReg(CPU* cpu, int reg, int logSz, RegVal val)
+    {
+        return WriteReg(cpu, Register(reg), logSz, val);
+    }
+
+    static void WriteReg(CPU* cpu, Register reg, int logSz, RegVal val)
+    {
+        auto regs = cpu->state.gpr;
+        auto mask = (0x100 << ((8 << logSz) - 8)) - 1;
+        auto rh = (logSz == 0) * (reg & 4);
+        auto shift = 2 * rh;
+        mask <<= shift;
+        auto& r = regs[reg ^ rh];
+        r ^= (r & mask) ^ ((val << shift) & mask);
+    }
+
+    static void ReadRM(CPU* cpu, Prefixes prefixes, ModRM modrm, Calc& calc)
+    {
+        if (modrm.type != modrm.Reg) {
             auto sreg = GetSeg(prefixes, modrm.type);
             calc.n[0] = cpu->ReadMem(sreg, modrm.addr, calc.logSz);
         } else {
-            auto rh = (calc.logSz == 0) * (modrm.addr & 4);
-            auto shift = 2 * rh;
-            calc.n[0] = SignExtend(regs[modrm.addr ^ rh] >> shift, calc.logSz);
+            calc.n[0] = ReadReg(cpu, modrm.addr, calc.logSz);
         }
-        auto rh = (calc.logSz == 0) * (modrm.reg & 4);
-        auto shift = 2 * rh;
-        calc.n[1] = SignExtend(regs[modrm.reg ^ rh] >> shift, calc.logSz);
+        calc.n[1] = ReadReg(cpu, modrm.reg, calc.logSz);
     }
 
     static void WriteRM(CPU* cpu, Prefixes prefixes, ModRM modrm, Calc& cache, bool reg)
     {
-        auto regs = cpu->state.gpr;
-        auto mask = (0x100 << (cache.logSz * 8)) - 1;
         if (reg) {
-            auto rh = (cache.logSz == 0) * (modrm.reg & 4);
-            auto shift = 2 * rh;
-            mask <<= shift;
-            auto& r = regs[modrm.reg ^ rh];
-            r ^= (r & mask) ^ ((cache.result << shift) & mask);
-        } else if (modrm.type != Reg) {
+            WriteReg(cpu, modrm.reg, cache.logSz,cache.result);
+        } else if (modrm.type != modrm.Reg) {
             auto sreg = GetSeg(prefixes, modrm.type);
             cpu->WriteMem(sreg, modrm.addr, cache.logSz, cache.result);
         } else {
-            auto rh = (cache.logSz == 0) * (modrm.reg & 4);
-            auto shift = 2 * rh;
-            mask <<= shift;
-            auto& r = regs[modrm.addr ^ rh];
-            r ^= (r & mask) ^ ((cache.result << shift) & mask);
+            WriteReg(cpu, modrm.addr, cache.logSz,cache.result);
         }
     }
 
-    static void BiOp(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int BiOp(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         auto& flags =cpu->state.flags;
@@ -330,12 +357,13 @@ struct CPU::Operations {
             WriteRM(cpu, prefixes, modRM, calc, op & 2);
         }
         flags = calc.GetFlags(flags);
+        return Normal;
     }
 
-    static void BiOpAI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int BiOpAI(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         prefixes.segment = CS;
-        ModRM modRM = {.type = Addr, .reg = AX};
+        ModRM modRM = {.type = modRM.Addr, .reg = AX};
         auto& flags =cpu->state.flags;
         Calc calc(op & 1);
         modRM.addr = cpu->state.ip,
@@ -346,6 +374,22 @@ struct CPU::Operations {
             WriteRM(cpu, prefixes, modRM, calc, true);
         }
         flags = calc.GetFlags(flags);
+        return Normal;
+    }
+
+    static int BiOpIm(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        ModRM modRM = GetModRM(cpu);
+        auto& flags =cpu->state.flags;
+        Calc calc(op & 1);
+        ReadRM(cpu, prefixes, modRM, calc);
+        auto oprm = Calc::Op(modRM.reg);
+        calc.DoOp(oprm, flags & CF);
+        if (oprm != calc.Cmp) {
+            WriteRM(cpu, prefixes, modRM, calc, false);
+        }
+        flags = calc.GetFlags(flags);
+        return Normal;
     }
 
     static void PushVal(CPU* cpu, int logSz, RegVal val)
@@ -360,20 +404,29 @@ struct CPU::Operations {
         return result;
     }
 
-    static void PushSReg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PushSReg(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         PushVal(cpu, 1, cpu->state.sregs[(op >> 3) & 3]);
+        return Normal;
     }
 
-    static void PopSReg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PopSReg(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         cpu->state.sregs[(op >> 3) & 3] = PopVal(cpu, 1);
+        return Normal;
     }
 
-    static void Nop(CPU*, Prefixes, uint8_t)
-    {}
+    static int Nop(CPU*, Prefixes, uint8_t)
+    {
+        return Normal;
+    }
 
-    static void AAA(CPU* cpu, Prefixes, uint8_t)
+    static int Hlt(CPU*, Prefixes, uint8_t)
+    {
+        return Halt;
+    }
+
+    static int AAA(CPU* cpu, Prefixes, uint8_t)
     {
         if ((cpu->state.gpr[AX] & 0xF) > 9 || (cpu->state.flags & AF)) {
             cpu->state.gpr[AX] += 0x106;
@@ -382,9 +435,10 @@ struct CPU::Operations {
             cpu->state.flags ^= cpu->state.flags & (AF | CF);
         }
         cpu->state.gpr[AX] ^= cpu->state.gpr[AX] & 0xF0;
+        return Normal;
     }
 
-    static void AAS(CPU* cpu, Prefixes, uint8_t)
+    static int AAS(CPU* cpu, Prefixes, uint8_t)
     {
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
@@ -397,9 +451,10 @@ struct CPU::Operations {
             flags ^= flags & (AF | CF);
         }
         regs[AX] ^= regs[AX] & 0xF0;
+        return Normal;
     }
 
-    static void DAA(CPU* cpu, Prefixes, uint8_t)
+    static int DAA(CPU* cpu, Prefixes, uint8_t)
     {
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
@@ -412,9 +467,10 @@ struct CPU::Operations {
         regs[AX] |= tmp & 0xFF;
         flags ^= flags & (AF | CF);
         flags |= AF * a | CF * c;
+        return Normal;
     }
 
-    static void DAS(CPU* cpu, Prefixes, uint8_t)
+    static int DAS(CPU* cpu, Prefixes, uint8_t)
     {
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
@@ -434,9 +490,10 @@ struct CPU::Operations {
         regs[AX] |= tmp & 0xFF;
         flags ^= flags & (AF | CF);
         flags |= AF * a | CF * c2;
+        return Normal;
     }
 
-    static void IncDec(CPU* cpu, Prefixes, uint8_t op)
+    static int IncDec(CPU* cpu, Prefixes, uint8_t op)
     {
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
@@ -447,23 +504,26 @@ struct CPU::Operations {
         calc.flagsMask ^= CF;
         regs[op & 7] = calc.result;
         flags = calc.GetFlags(flags);
+        return Normal;
     }
 
-    static void PushReg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PushReg(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         PushVal(cpu, 1, cpu->state.gpr[op & 3]);
+        return Normal;
     }
 
-    static void PopReg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PopReg(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         cpu->state.gpr[op & 3] = PopVal(cpu, 1);
+        return Normal;
     }
 
-    static void Jcc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Jcc(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto& flags = cpu->state.flags;
-        auto off = SignExtend(cpu->ReadByte(CS, ip++), 1);
+        auto off = SignExtend(cpu->ReadByte(CS, ip++), 0);
         bool cond;
         switch ((op >> 1) & 0x7) {
         case 0:
@@ -493,15 +553,167 @@ struct CPU::Operations {
         }
         cond = cond ^ (op & 1);
         ip += off * cond;
+        return Normal;
     }
 
-    using Op = void(CPU*, Prefixes, uint8_t op);
+    static int Test(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        ModRM modRM = GetModRM(cpu);
+        auto& flags =cpu->state.flags;
+        Calc calc(op & 1);
+        ReadRM(cpu, prefixes, modRM, calc);
+        calc.DoOp(calc.And, flags & CF);
+        flags = calc.GetFlags(flags);
+        return Normal;
+    }
+
+    static int Xchg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        ModRM modRM = GetModRM(cpu);
+        int logSz = op & 1;
+        auto temp = ReadReg(cpu, modRM.reg, logSz);
+        RegVal tmp2;
+        if (modRM.type == modRM.Reg) {
+            tmp2 = ReadReg(cpu, modRM.addr, logSz);
+            WriteReg(cpu, modRM.addr, logSz, temp);
+        } else {
+            auto sreg = GetSeg(prefixes, modRM.type);
+            tmp2 = cpu->ReadMem(sreg, modRM.addr, logSz);
+            cpu->WriteMem(sreg, modRM.addr, logSz, temp);
+        }
+        WriteReg(cpu, modRM.reg, logSz, tmp2);
+        return Normal;
+    }
+
+    static int Mov(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        ModRM modRM = GetModRM(cpu);
+        int logSz = op & 1;
+        RegVal temp = ReadReg(cpu, modRM.reg, logSz);
+        if (modRM.type == modRM.Reg) {
+            WriteReg(cpu, modRM.addr, logSz, temp);
+        } else {
+            auto sreg = GetSeg(prefixes, modRM.type);
+            cpu->WriteMem(sreg, modRM.addr, logSz, temp);
+        }
+        return Normal;
+    }
+
+    static int MovR(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        ModRM modRM = GetModRM(cpu);
+        int logSz = op & 1;
+        RegVal temp;
+        if (modRM.type == modRM.Reg) {
+            temp = ReadReg(cpu, modRM.addr, logSz);
+        } else {
+            auto sreg = GetSeg(prefixes, modRM.type);
+            temp = cpu->ReadMem(sreg, modRM.addr, logSz);
+        }
+        WriteReg(cpu, modRM.reg, logSz, temp);
+        return Normal;
+    }
+
+    static int MovSreg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto sreg = cpu->state.sregs;
+        ModRM modRM = GetModRM(cpu);
+        int logSz = 1;
+        RegVal temp = sreg[modRM.reg];
+        if (modRM.type == modRM.Reg) {
+            WriteReg(cpu, modRM.addr, logSz, temp);
+        } else {
+            auto sreg = GetSeg(prefixes, modRM.type);
+            cpu->WriteMem(sreg, modRM.addr, logSz, (temp));
+        }
+        return Normal;
+    }
+
+    static int MovSregR(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto sreg = cpu->state.sregs;
+        ModRM modRM = GetModRM(cpu);
+        if (modRM.reg == CS) {
+            // TODO: #UD
+            return Normal;
+        }
+        int logSz = 1;
+        RegVal temp;
+        if (modRM.type == modRM.Reg) {
+            temp = ReadReg(cpu, modRM.addr, logSz);
+        } else {
+            auto sreg = GetSeg(prefixes, modRM.type);
+            temp = cpu->ReadMem(sreg, modRM.addr, logSz);
+        }
+        sreg[modRM.reg] = temp;
+        return Normal;
+    }
+
+    static int Lea(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        ModRM modRM = GetModRM(cpu);
+        int logSz = 1;
+        if (modRM.type == modRM.Reg) {
+            // TODO: #UD
+        }
+        WriteReg(cpu, modRM.reg, logSz, modRM.addr);
+        return Normal;
+    }
+
+    static int PopRM(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        ModRM modRM = GetModRM(cpu);
+        int logSz = 1;
+        if (modRM.reg) {
+            // TODO: #UD
+            return Normal;
+        }
+        if (modRM.type == modRM.Reg) {
+            PopReg(cpu, prefixes, modRM.addr);
+        } else {
+            auto regs = cpu->state.gpr;
+            auto sreg = GetSeg(prefixes, modRM.type);
+            auto temp = cpu->ReadMem(SS, regs[SP], logSz);
+            cpu->WriteMem(sreg, modRM.addr, logSz, temp);
+            regs[SP] += 2;
+        }
+        return Normal;
+    }
+
+    static int XchgA(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        int logSz = op & 1;
+        auto reg = Register(op & 7);
+        auto tmp1 = ReadReg(cpu, AX, logSz);
+        auto tmp2 = ReadReg(cpu, reg, logSz);
+        WriteReg(cpu, AX, logSz, tmp2);
+        WriteReg(cpu, reg, logSz, tmp1);
+        return Normal;
+    }
+
+    static int Cbw(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        int logSz = 0;
+        auto temp = SignExtend(ReadReg(cpu, AX, logSz), logSz);
+        WriteReg(cpu, AX, logSz + 1, temp);
+        return Normal;
+    }
+
+    static int Cwd(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        int logSz = 1;
+        auto temp = SignExtend(ReadReg(cpu, AX, logSz), logSz);
+        WriteReg(cpu, DX, logSz, -GetSign(temp, logSz));
+        return Normal;
+    }
+
+    using Op = int(CPU*, Prefixes, uint8_t op);
     static Op* map1[256];
 };
 
 CPU::Operations::Op* CPU::Operations::map1[256] = {
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, Nop, // 0
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 8
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, Nop, // 8 // TODO: #UD instead NOP
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x10
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x18
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, DAA, // 0x20
@@ -512,14 +724,14 @@ CPU::Operations::Op* CPU::Operations::map1[256] = {
     IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, // 0x48
     PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, // 0x50
     PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, // 0x58
-    Nop, Nop, Nop, Nop, 0, 0, 0, 0, // 0x60
-    Nop, Nop, Nop, Nop, Nop, Nop, Nop, Nop, // 0x68
+    Nop, Nop, Nop, Nop, 0, 0, 0, 0, // 0x60 // TODO: #UD
+    Nop, Nop, Nop, Nop, Nop, Nop, Nop, Nop, // 0x68 // TODO: #UD
     Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, // 0x70
     Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, // 0x78
-    0, 0, 0, 0, 0, 0, 0, 0, // 0x80
-    0, 0, 0, 0, 0, 0, 0, 0, // 0x88
-    Nop, 0, 0, 0, 0, 0, 0, 0, // 0x90
-    0, 0, 0, 0, 0, 0, 0, 0, // 0x98
+    BiOpIm, BiOpIm, BiOpIm, BiOpIm, Test, Test, Xchg, Xchg, // 0x80
+    Mov, Mov, MovR, MovR, MovSreg, Lea, MovSregR, PopRM, // 0x88
+    Nop, XchgA, XchgA, XchgA, XchgA, XchgA, XchgA, XchgA, // 0x90 // TODO: xchg rax, r8
+    Cbw, Cwd, 0, 0, 0, 0, 0, 0, // 0x98
     0, 0, 0, 0, 0, 0, 0, 0, // 0xA8
     0, 0, 0, 0, 0, 0, 0, 0, // 0xA0
     0, 0, 0, 0, 0, 0, 0, 0, // 0xB8
@@ -530,7 +742,7 @@ CPU::Operations::Op* CPU::Operations::map1[256] = {
     0, 0, 0, 0, 0, 0, 0, 0, // 0xD8
     0, 0, 0, 0, 0, 0, 0, 0, // 0xE0
     0, 0, 0, 0, 0, 0, 0, 0, // 0xE8
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xF0
+    0, 0, 0, 0, Hlt, 0, 0, 0, // 0xF0
     0, 0, 0, 0, 0, 0, 0, 0, // 0xF8
 };
 
@@ -539,8 +751,7 @@ int CPU::DoOpcode()
     auto prevIP = state.ip;
     Prefixes prefixes = ParsePrefixes();
     auto op = ReadByte(CS, state.ip++);
-    Operations::map1[op](this, prefixes, op);
-    return Normal;
+    return Operations::map1[op](this, prefixes, op);
 }
 
 auto CPU::ParsePrefixes() -> Prefixes
@@ -614,7 +825,7 @@ auto CPU::ReadMem(SegmentRegister sreg, uint16_t addr, int logSz) -> RegVal
         result = ReadWord(sreg, addr);
         break;
     }
-    return SignExtend(result, logSz);
+    return result;
 }
 
 void CPU::WriteByte(SegmentRegister sreg, uint16_t addr, uint8_t val)

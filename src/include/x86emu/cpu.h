@@ -64,8 +64,6 @@ private:
     void WriteByte(SegmentRegister sreg, uint16_t addr, uint8_t val);
     void WriteWord(SegmentRegister sreg, uint16_t addr, uint16_t val);
     void WriteMem(SegmentRegister sreg, uint16_t addr, int logSz, RegVal val);
-    void PushSreg(SegmentRegister sreg);
-    void PopSreg(SegmentRegister sreg);
     auto CalcAddr(SegmentRegister sreg, uint16_t addr) -> uint32_t;
 
     CPUState state;
