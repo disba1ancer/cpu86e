@@ -463,7 +463,7 @@ struct CPU::Operations {
     {
         auto& ip = cpu->state.ip;
         auto& flags = cpu->state.flags;
-        auto off = cpu->ReadByte(CS, ip++);
+        auto off = SignExtend(cpu->ReadByte(CS, ip++), 1);
         bool cond;
         switch ((op >> 1) & 0x7) {
         case 0:
@@ -488,7 +488,7 @@ struct CPU::Operations {
             cond = !(flags & OF) != !(flags & SF);
             break;
         case 7:
-            cond = !(flags & OF) == !(flags & SF) && (flags & ZF);
+            cond = !(flags & OF) == !(flags & SF) && !(flags & ZF);
             break;
         }
         cond = cond ^ (op & 1);
