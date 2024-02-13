@@ -62,6 +62,8 @@ enum Flags {
     AF = 16,
     ZF = 64,
     SF = 128,
+    IF = 0x200,
+    DF = 0x400,
     OF = 0x800,
     FlagsMask = CF | PF | AF | ZF | SF | OF
 };
@@ -369,7 +371,6 @@ struct CPU::Operations {
         modRM.addr = cpu->state.ip,
         cpu->state.ip += 1 << calc.logSz;
         ReadRM(cpu, prefixes, modRM, calc);
-        calc.DoOp(op, flags & CF);
         if (calc.DoOp(op, flags & CF) != calc.Cmp) {
             WriteRM(cpu, prefixes, modRM, calc, true);
         }
@@ -567,6 +568,20 @@ struct CPU::Operations {
         return Normal;
     }
 
+    static int TestAI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        prefixes.segment = CS;
+        ModRM modRM = {.type = modRM.Addr, .reg = AX};
+        auto& flags = cpu->state.flags;
+        Calc calc(op & 1);
+        modRM.addr = cpu->state.ip,
+        cpu->state.ip += 1 << calc.logSz;
+        ReadRM(cpu, prefixes, modRM, calc);
+        calc.DoOp(calc.And, false, flags & CF);
+        flags = calc.GetFlags(flags);
+        return Normal;
+    }
+
     static int Xchg(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
@@ -707,6 +722,113 @@ struct CPU::Operations {
         return Normal;
     }
 
+    static int CallF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto& cs = cpu->state.sregs[CS];
+        auto logSz = 1;
+        auto off = cpu->ReadMem(CS, ip, logSz);
+        ip += 1 << logSz;
+        auto seg = cpu->ReadWord(CS, ip);
+        ip += 2;
+        PushVal(cpu, 1, cs);
+        PushVal(cpu, logSz, ip);
+        cs = seg;
+        ip = off;
+        return Normal;
+    }
+
+    static int Esc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        GetModRM(cpu);
+        return Normal;
+    }
+
+    static int PushF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        int logSz = 1;
+        PushVal(cpu, logSz, cpu->state.flags);
+        return Normal;
+    }
+
+    static int PopF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        int logSz = 1;
+        cpu->state.flags = PopVal(cpu, logSz);
+        return Normal;
+    }
+
+    static int SahF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& flags = cpu->state.flags;
+        flags ^= (flags & 0xFF) ^ ReadReg(cpu, SP, 0);
+        return Normal;
+    }
+
+    static int LahF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& flags = cpu->state.flags;
+        WriteReg(cpu, SP, 0, flags);
+        return Normal;
+    }
+
+    static int MovAxM(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        int logSz = op & 1;
+        auto addr = cpu->ReadMem(CS, ip, 1); // TODO: Address size
+        ip += 1 << logSz;
+        auto seg = GetSeg(prefixes);
+        auto temp = cpu->ReadMem(seg, addr, logSz);
+        WriteReg(cpu, AX, logSz, temp);
+        return Normal;
+    }
+
+    static int MovMAx(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ax = cpu->state.gpr[AX];
+        auto& ip = cpu->state.ip;
+        int logSz = op & 1;
+        auto addr = cpu->ReadMem(CS, ip, 1);
+        ip += 1 << logSz;
+        auto seg = GetSeg(prefixes);
+        cpu->WriteMem(seg, addr, logSz, ax);
+        return Normal;
+    }
+
+    static int Movs(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& regs = cpu->state.gpr;
+        auto& flags = cpu->state.flags;
+        int logSz = op & 1;
+        auto seg = GetSeg(prefixes);
+        auto temp = cpu->ReadMem(seg, regs[SI], logSz);
+        cpu->WriteMem(ES, seg, regs[DI], temp);
+        int size = (1 << logSz) * (2 * !(flags & DF) - 1);
+        regs[SI] += size;
+        regs[DI] += size;
+        // TODO: handle rep prefix
+        return Normal;
+    }
+
+    static int Cmps(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& regs = cpu->state.gpr;
+        auto& flags = cpu->state.flags;
+        int logSz = op & 1;
+        auto seg = GetSeg(prefixes);
+        Calc calc(logSz);
+        calc.n[0] = cpu->ReadMem(seg, regs[SI], logSz);
+        calc.n[1] = cpu->ReadMem(ES, regs[DI], logSz);
+        calc.DoOp(calc.Cmp);
+        flags = calc.GetFlags(flags);
+        int size = (1 << logSz) * (2 * !(flags & DF) - 1);
+        regs[SI] += size;
+        regs[DI] += size;
+        // TODO: handle rep prefix
+        return Normal;
+    }
+
     using Op = int(CPU*, Prefixes, uint8_t op);
     static Op* map1[256];
 };
@@ -731,15 +853,15 @@ CPU::Operations::Op* CPU::Operations::map1[256] = {
     BiOpIm, BiOpIm, BiOpIm, BiOpIm, Test, Test, Xchg, Xchg, // 0x80
     Mov, Mov, MovR, MovR, MovSreg, Lea, MovSregR, PopRM, // 0x88
     Nop, XchgA, XchgA, XchgA, XchgA, XchgA, XchgA, XchgA, // 0x90 // TODO: xchg rax, r8
-    Cbw, Cwd, 0, 0, 0, 0, 0, 0, // 0x98
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xA8
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xA0
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xB8
+    Cbw, Cwd, CallF, Nop, PushF, PopF, SahF, LahF, // 0x98
+    MovAxM, MovAxM, MovMAx, MovMAx, Movs, Movs, Cmps, Cmps, // 0xA0
+    TestAI, TestAI, 0, 0, 0, 0, 0, 0, // 0xA8
     0, 0, 0, 0, 0, 0, 0, 0, // 0xB0
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xC8
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xB8
     0, 0, 0, 0, 0, 0, 0, 0, // 0xC0
+    0, 0, 0, 0, 0, 0, 0, 0, // 0xC8
     0, 0, 0, 0, 0, 0, 0, 0, // 0xD0
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xD8
+    Esc, Esc, Esc, Esc, Esc, Esc, Esc, Esc, // 0xD8
     0, 0, 0, 0, 0, 0, 0, 0, // 0xE0
     0, 0, 0, 0, 0, 0, 0, 0, // 0xE8
     0, 0, 0, 0, Hlt, 0, 0, 0, // 0xF0
