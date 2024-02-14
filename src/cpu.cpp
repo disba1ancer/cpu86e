@@ -803,7 +803,7 @@ struct CPU::Operations {
         int logSz = op & 1;
         auto seg = GetSeg(prefixes);
         auto temp = cpu->ReadMem(seg, regs[SI], logSz);
-        cpu->WriteMem(ES, seg, regs[DI], temp);
+        cpu->WriteMem(ES, regs[DI], logSz, temp);
         int size = (1 << logSz) * (2 * !(flags & DF) - 1);
         regs[SI] += size;
         regs[DI] += size;
@@ -826,6 +826,58 @@ struct CPU::Operations {
         regs[SI] += size;
         regs[DI] += size;
         // TODO: handle rep prefix
+        return Normal;
+    }
+
+    static int Stos(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& regs = cpu->state.gpr;
+        auto& flags = cpu->state.flags;
+        int logSz = op & 1;
+        cpu->WriteMem(ES, regs[DI], logSz, regs[AX]);
+        int size = (1 << logSz) * (2 * !(flags & DF) - 1);
+        regs[DI] += size;
+        // TODO: handle rep prefix
+        return Normal;
+    }
+
+    static int Lods(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& regs = cpu->state.gpr;
+        auto& flags = cpu->state.flags;
+        int logSz = op & 1;
+        auto seg = GetSeg(prefixes);
+        auto temp = cpu->ReadMem(seg, regs[SI], logSz);
+        WriteReg(cpu, AX, logSz, temp);
+        int size = (1 << logSz) * (2 * !(flags & DF) - 1);
+        regs[SI] += size;
+        // TODO: handle rep prefix
+        return Normal;
+    }
+
+    static int Scas(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& regs = cpu->state.gpr;
+        auto& flags = cpu->state.flags;
+        int logSz = op & 1;
+        Calc calc(logSz);
+        calc.n[0] = regs[AX];
+        calc.n[1] = cpu->ReadMem(ES, regs[DI], logSz);
+        calc.DoOp(calc.Cmp);
+        flags = calc.GetFlags(flags);
+        int size = (1 << logSz) * (2 * !(flags & DF) - 1);
+        regs[DI] += size;
+        // TODO: handle rep prefix
+        return Normal;
+    }
+
+    static int MovImm(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        int logSz = !!(op & 8);
+        auto& ip = cpu->state.ip;
+        RegVal temp = cpu->ReadMem(CS, ip, logSz);
+        ip += 1 << logSz;
+        WriteReg(cpu, op & 7, logSz, temp);
         return Normal;
     }
 
@@ -855,9 +907,9 @@ CPU::Operations::Op* CPU::Operations::map1[256] = {
     Nop, XchgA, XchgA, XchgA, XchgA, XchgA, XchgA, XchgA, // 0x90 // TODO: xchg rax, r8
     Cbw, Cwd, CallF, Nop, PushF, PopF, SahF, LahF, // 0x98
     MovAxM, MovAxM, MovMAx, MovMAx, Movs, Movs, Cmps, Cmps, // 0xA0
-    TestAI, TestAI, 0, 0, 0, 0, 0, 0, // 0xA8
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xB0
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xB8
+    TestAI, TestAI, Stos, Stos, Lods, Lods, Scas, Scas, // 0xA8
+    MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, // 0xB0
+    MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, // 0xB8
     0, 0, 0, 0, 0, 0, 0, 0, // 0xC0
     0, 0, 0, 0, 0, 0, 0, 0, // 0xC8
     0, 0, 0, 0, 0, 0, 0, 0, // 0xD0
