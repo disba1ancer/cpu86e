@@ -214,6 +214,66 @@ struct CPU::Calc {
         }
         SetResultFlags();
     }
+
+    enum Op2 { Rol, Ror, Rcl, Rcr, Shl, Shr, Op2UD, Sar };
+
+    void DoOp2(Op2 op, bool cf = false)
+    {
+        n[0] = ZeroExtend(n[0], logSz);
+        n[1] = n[1] & 4;
+        if (n[1] == 0) {
+            result = n[0];
+            flagsMask ^= flagsMask & (CF | OF | AF);
+            SetResultFlags();
+            return;
+        }
+        int maxBits = 1 << (logSz + 3);
+        auto mask = 1 << (maxBits - n[1] - 1);
+        switch (op) {
+        case Rol:
+            result = (n[0] << n[1]) | (n[0] >> (maxBits - n[1]));
+            flags = result & 1;
+            break;
+        case Ror:
+            result = (n[0] >> n[1]) | (n[0] << (maxBits - n[1]));
+            flags = (n[0] >> (n[1] - 1)) & 1;
+            break;
+        case Rcl:
+            result = (n[0] << n[1]) | (cf << (n[1] - 1));
+            if (n[1] > 1) {
+                result |= (n[0] >> (maxBits - n[1] + 1));
+            }
+            flags = (n[0] << (n[1] - 1)) & 1;
+            break;
+        case Rcr:
+            result = (n[0] >> n[1]) | (cf << (maxBits - n[1]));
+            if (n[1] > 1) {
+                result |= (n[0] << (maxBits - n[1] + 1));
+            }
+            flags = (n[0] >> (n[1] - 1)) & 1;
+            break;
+        case Shl:
+            result = n[0] << n[1];
+            flags = (n[0] >> (maxBits - n[1])) & 1;
+            break;
+        case Shr:
+            result = n[0] >> n[1];
+            flags = (n[0] >> (n[1] - 1)) & 1;
+            break;
+        case Op2UD:
+            // TODO: #UD
+            break;
+        case Sar:
+            result = n[0] >> n[1];
+            result = (result ^ mask) - mask;
+            flags = (n[0] >> (n[1] - 1)) & 1;
+            break;
+        }
+        if (n[1] == 1) {
+            flags |= OF * !!((n[0] ^ result) & mask);
+        }
+        SetResultFlags();
+    }
 };
 
 struct CPU::Operations {
@@ -334,18 +394,35 @@ struct CPU::Operations {
         } else {
             calc.n[0] = ReadReg(cpu, modrm.addr, calc.logSz);
         }
+        calc.n[0] = ReadRM(cpu, prefixes, modrm, calc.logSz);
         calc.n[1] = ReadReg(cpu, modrm.reg, calc.logSz);
+    }
+
+    static auto ReadRM(CPU* cpu, Prefixes prefixes, ModRM modrm, int logSz) -> RegVal
+    {
+        if (modrm.type != modrm.Reg) {
+            auto sreg = GetSeg(prefixes, modrm.type);
+            return cpu->ReadMem(sreg, modrm.addr, logSz);
+        }
+        return ReadReg(cpu, modrm.addr, logSz);
     }
 
     static void WriteRM(CPU* cpu, Prefixes prefixes, ModRM modrm, Calc& cache, bool reg)
     {
         if (reg) {
             WriteReg(cpu, modrm.reg, cache.logSz,cache.result);
-        } else if (modrm.type != modrm.Reg) {
-            auto sreg = GetSeg(prefixes, modrm.type);
-            cpu->WriteMem(sreg, modrm.addr, cache.logSz, cache.result);
         } else {
-            WriteReg(cpu, modrm.addr, cache.logSz,cache.result);
+            WriteRM(cpu, prefixes, modrm, cache.logSz, cache.result);
+        }
+    }
+
+    static void WriteRM(CPU* cpu, Prefixes prefixes, ModRM modrm, int logSz, RegVal val)
+    {
+        if (modrm.type != modrm.Reg) {
+            auto sreg = GetSeg(prefixes, modrm.type);
+            cpu->WriteMem(sreg, modrm.addr, logSz, val);
+        } else {
+            WriteReg(cpu, modrm.addr, logSz, val);
         }
     }
 
@@ -366,13 +443,13 @@ struct CPU::Operations {
     {
         prefixes.segment = CS;
         ModRM modRM = {.type = modRM.Addr, .reg = AX};
-        auto& flags =cpu->state.flags;
+        auto& flags = cpu->state.flags;
         Calc calc(op & 1);
         modRM.addr = cpu->state.ip,
         cpu->state.ip += 1 << calc.logSz;
         ReadRM(cpu, prefixes, modRM, calc);
         if (calc.DoOp(op, flags & CF) != calc.Cmp) {
-            WriteRM(cpu, prefixes, modRM, calc, true);
+            WriteReg(cpu, AX, calc.logSz, calc.result);
         }
         flags = calc.GetFlags(flags);
         return Normal;
@@ -381,13 +458,16 @@ struct CPU::Operations {
     static int BiOpIm(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
-        auto& flags =cpu->state.flags;
+        auto& flags = cpu->state.flags;
+        auto& ip = cpu->state.ip;
         Calc calc(op & 1);
-        ReadRM(cpu, prefixes, modRM, calc);
+        calc.n[1] = cpu->ReadMem(CS, ip, (op & 3) == 1);
+        ip += 1 << ((op & 3) == 1);
+        calc.n[0] = ReadRM(cpu, prefixes, modRM, calc.logSz);
         auto oprm = Calc::Op(modRM.reg);
-        calc.DoOp(oprm, flags & CF);
+        calc.DoOp(oprm, false, flags & CF);
         if (oprm != calc.Cmp) {
-            WriteRM(cpu, prefixes, modRM, calc, false);
+            WriteRM(cpu, prefixes, modRM, calc.logSz, calc.result);
         }
         flags = calc.GetFlags(flags);
         return Normal;
@@ -881,11 +961,90 @@ struct CPU::Operations {
         return Normal;
     }
 
+    static int ShiftI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto& flags = cpu->state.flags;
+        ModRM modrm = GetModRM(cpu);
+        Calc calc(op & 1);
+        calc.n[1] = cpu->ReadMem(CS, ip, 0);
+        ip += 1;
+        calc.n[0] = ReadRM(cpu, prefixes, modrm, calc.logSz);
+        calc.DoOp2(Calc::Op2(modrm.reg), cpu->state.flags & CF);
+        WriteRM(cpu, prefixes, modrm, calc.logSz, calc.result);
+        flags = calc.GetFlags(flags);
+        return Normal;
+    }
+
+    static int Shift1(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto& flags = cpu->state.flags;
+        ModRM modrm = GetModRM(cpu);
+        Calc calc(op & 1);
+        calc.n[1] = 1;
+        ip += 1;
+        calc.n[0] = ReadRM(cpu, prefixes, modrm, calc.logSz);
+        calc.DoOp2(Calc::Op2(modrm.reg), cpu->state.flags & CF);
+        WriteRM(cpu, prefixes, modrm, calc.logSz, calc.result);
+        flags = calc.GetFlags(flags);
+        return Normal;
+    }
+
+    static int ShiftC(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto& flags = cpu->state.flags;
+        ModRM modrm = GetModRM(cpu);
+        Calc calc(op & 1);
+        calc.n[1] = ReadReg(cpu, CX, 0);
+        ip += 1;
+        calc.n[0] = ReadRM(cpu, prefixes, modrm, calc.logSz);
+        calc.DoOp2(Calc::Op2(modrm.reg), cpu->state.flags & CF);
+        WriteRM(cpu, prefixes, modrm, calc.logSz, calc.result);
+        flags = calc.GetFlags(flags);
+        return Normal;
+    }
+
+    static int Ret(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto addr = PopVal(cpu, 1);
+        ip = addr;
+        return Normal;
+    }
+
+    static int RetI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto imm = cpu->ReadWord(CS, ip);
+        ip += 2;
+        auto addr = PopVal(cpu, 1);
+        cpu->state.gpr[SP] += imm;
+        ip = addr;
+        return Normal;
+    }
+
+    static int Lxs(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        ModRM modrm = GetModRM(cpu);
+        if (modrm.type == modrm.Reg) {
+            // TODO: #UD
+            return Normal;
+        }
+        auto seg = GetSeg(prefixes, modrm.type);
+        auto addr = PopVal(cpu, 1);
+        ip = addr;
+        return Normal;
+    }
+
     using Op = int(CPU*, Prefixes, uint8_t op);
     static Op* map1[256];
 };
 
-CPU::Operations::Op* CPU::Operations::map1[256] = {
+CPU::Operations::Op*
+CPU::Operations::map1[256] = {
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, Nop, // 8 // TODO: #UD instead NOP
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x10
@@ -910,9 +1069,9 @@ CPU::Operations::Op* CPU::Operations::map1[256] = {
     TestAI, TestAI, Stos, Stos, Lods, Lods, Scas, Scas, // 0xA8
     MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, // 0xB0
     MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, // 0xB8
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xC0
+    ShiftI, ShiftI, Ret, RetI, 0, 0, 0, 0, // 0xC0
     0, 0, 0, 0, 0, 0, 0, 0, // 0xC8
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xD0
+    Shift1, Shift1, ShiftC, ShiftC, 0, 0, 0, 0, // 0xD0
     Esc, Esc, Esc, Esc, Esc, Esc, Esc, Esc, // 0xD8
     0, 0, 0, 0, 0, 0, 0, 0, // 0xE0
     0, 0, 0, 0, 0, 0, 0, 0, // 0xE8
