@@ -274,6 +274,33 @@ struct CPU::Calc {
         }
         SetResultFlags();
     }
+
+
+    enum Op3 { Test, Op3UD, Not, Neg, Mul, IMul, Div, IDiv };
+
+    bool DoOp3(Op3 op)
+    {
+        switch (op) {
+        case Test:
+            break;
+        case Op3UD:
+            // TODO: #UD
+            break;
+        case Not:
+            break;
+        case Neg:
+            break;
+        case Mul:
+            break;
+        case IMul:
+            break;
+        case Div:
+            break;
+        case IDiv:
+            break;
+        }
+        SetResultFlags();
+    }
 };
 
 struct CPU::Operations {
@@ -288,6 +315,18 @@ struct CPU::Operations {
         uint8_t type;
         uint8_t reg;
     };
+
+    static void Interrupt(CPU* cpu, int num)
+    {
+        auto& state = cpu->state;
+        auto off = cpu->ReadWord(num * 4);
+        auto seg = cpu->ReadWord(num * 4 + 2);
+        PushVal(cpu, 1, state.flags);
+        PushVal(cpu, 1, state.sregs[CS]);
+        PushVal(cpu, 1, state.ip);
+        state.ip = off;
+        state.sregs[CS] = seg;
+    }
 
     static ModRM GetModRM(CPU* cpu)
     {
@@ -535,6 +574,36 @@ struct CPU::Operations {
         return Normal;
     }
 
+    static int AAM(CPU* cpu, Prefixes, uint8_t)
+    {
+        auto& ip = cpu->state.ip;
+        auto& ax = cpu->state.gpr[AX];
+        auto& flags = cpu->state.flags;
+        auto imm = cpu->ReadByte(CS, ip);
+        auto t = ax & 0xFF;
+        ax = (t / imm << 8) | (t % imm);
+        Calc calc(0);
+        calc.result = ax;
+        calc.SetResultFlags();
+        flags = calc.GetFlags(flags);
+        return Normal;
+    }
+
+    static int AAD(CPU* cpu, Prefixes, uint8_t)
+    {
+        auto& ip = cpu->state.ip;
+        auto& ax = cpu->state.gpr[AX];
+        auto& flags = cpu->state.flags;
+        auto imm = cpu->ReadByte(CS, ip);
+        auto t = ax >> 8;
+        ax = (ax + t * imm) & 0xFF;
+        Calc calc(0);
+        calc.result = ax;
+        calc.SetResultFlags();
+        flags = calc.GetFlags(flags);
+        return Normal;
+    }
+
     static int DAA(CPU* cpu, Prefixes, uint8_t)
     {
         auto regs = cpu->state.gpr;
@@ -684,13 +753,8 @@ struct CPU::Operations {
     {
         ModRM modRM = GetModRM(cpu);
         int logSz = op & 1;
-        RegVal temp = ReadReg(cpu, modRM.reg, logSz);
-        if (modRM.type == modRM.Reg) {
-            WriteReg(cpu, modRM.addr, logSz, temp);
-        } else {
-            auto sreg = GetSeg(prefixes, modRM.type);
-            cpu->WriteMem(sreg, modRM.addr, logSz, temp);
-        }
+        auto temp = ReadReg(cpu, modRM.reg, logSz);
+        WriteRM(cpu, prefixes, modRM, logSz, temp);
         return Normal;
     }
 
@@ -698,14 +762,19 @@ struct CPU::Operations {
     {
         ModRM modRM = GetModRM(cpu);
         int logSz = op & 1;
-        RegVal temp;
-        if (modRM.type == modRM.Reg) {
-            temp = ReadReg(cpu, modRM.addr, logSz);
-        } else {
-            auto sreg = GetSeg(prefixes, modRM.type);
-            temp = cpu->ReadMem(sreg, modRM.addr, logSz);
-        }
+        auto temp = ReadRM(cpu, prefixes, modRM, logSz);
         WriteReg(cpu, modRM.reg, logSz, temp);
+        return Normal;
+    }
+
+    static int MovI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        ModRM modRM = GetModRM(cpu);
+        int logSz = op & 1;
+        auto temp = cpu->ReadMem(CS, ip, logSz);
+        ip += 1 << logSz;
+        WriteRM(cpu, prefixes, modRM, logSz, temp);
         return Normal;
     }
 
@@ -1018,7 +1087,6 @@ struct CPU::Operations {
     {
         auto& ip = cpu->state.ip;
         auto imm = cpu->ReadWord(CS, ip);
-        ip += 2;
         auto addr = PopVal(cpu, 1);
         cpu->state.gpr[SP] += imm;
         ip = addr;
@@ -1027,15 +1095,206 @@ struct CPU::Operations {
 
     static int Lxs(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
-        auto& ip = cpu->state.ip;
         ModRM modrm = GetModRM(cpu);
         if (modrm.type == modrm.Reg) {
             // TODO: #UD
             return Normal;
         }
-        auto seg = GetSeg(prefixes, modrm.type);
-        auto addr = PopVal(cpu, 1);
-        ip = addr;
+        auto ptr = ReadRM(cpu, prefixes, modrm, 1);
+        modrm.addr += 2;
+        cpu->state.sregs[(op & 1) * 3] = ReadRM(cpu, prefixes, modrm, 1);
+        WriteReg(cpu, modrm.reg, 1, ptr);
+        return Normal;
+    }
+
+    static int RetF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto& cs = cpu->state.sregs[CS];
+        ip = PopVal(cpu, 1);
+        cs = PopVal(cpu, 1);
+        return Normal;
+    }
+
+    static int RetFI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto& cs = cpu->state.sregs[CS];
+        auto imm = cpu->ReadWord(CS, ip);
+        cpu->state.gpr[SP] += imm;
+        ip = PopVal(cpu, 1);
+        cs = PopVal(cpu, 1);
+        return Normal;
+    }
+
+    static int Int3(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        Interrupt(cpu, 3);
+        return Normal;
+    }
+
+    static int Int(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto imm = cpu->ReadByte(CS, ip++);
+        Interrupt(cpu, imm);
+        return Normal;
+    }
+
+    static int IntO(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        if (cpu->state.flags & OF) {
+            Interrupt(cpu, 4);
+        }
+        return Normal;
+    }
+
+    static int IRet(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& state = cpu->state;
+        state.ip = PopVal(cpu, 1);
+        state.sregs[CS] = PopVal(cpu, 1);
+        state.flags = PopVal(cpu, 1);
+        return Normal;
+    }
+
+    static int Xlat(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto regs = cpu->state.gpr;
+        auto seg = GetSeg(prefixes);
+        auto t = cpu->ReadMem(seg, regs[BX], 0);
+        WriteReg(cpu, AX, 0, t);
+        return Normal;
+    }
+
+    static int Loopcc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto& flags = cpu->state.flags;
+        auto off = SignExtend(cpu->ReadByte(CS, ip++), 0);
+        auto cx = ReadReg(cpu, CX, 1);
+        cx--;
+        WriteReg(cpu, CX, 1, cx);
+        if (cx != 0 && (!(flags & ZF) ^ (op & 1)) + (op & 2)) {
+            ip += off;
+        }
+        return Normal;
+    }
+
+    static int Jcxz(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto& flags = cpu->state.flags;
+        auto off = SignExtend(cpu->ReadByte(CS, ip++), 0);
+        auto cx = ReadReg(cpu, CX, 1);
+        cx--;
+        WriteReg(cpu, CX, 1, cx);
+        ip += off * (cx == 0);
+        return Normal;
+    }
+
+    static int In(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        uint16_t port;
+        if (op & 8) {
+            port = cpu->state.gpr[DX];
+        } else {
+            port = cpu->ReadByte(CS, ip++);
+        }
+        auto logSz = op & 1;
+        RegVal temp;
+        if (logSz) {
+            temp = cpu->hook->ReadIOByte(port);
+        } else {
+            temp = cpu->hook->ReadIOWord(port);
+        }
+        WriteReg(cpu, AX, logSz, temp);
+        return Normal;
+    }
+
+    static int Out(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        uint16_t port;
+        if (op & 8) {
+            port = cpu->state.gpr[DX];
+        } else {
+            port = cpu->ReadByte(CS, ip++);
+        }
+        auto logSz = op & 1;
+        RegVal temp = ReadReg(cpu, AX, logSz);
+        if (logSz) {
+            cpu->hook->WriteIOByte(port, temp);
+        } else {
+            cpu->hook->WriteIOWord(port, temp);
+        }
+        return Normal;
+    }
+
+    static int Jmp(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto logSz = !!(op & 2);
+        auto off = SignExtend(cpu->ReadByte(CS, ip), logSz);
+        ip += off + (1 << logSz);
+        return Normal;
+    }
+
+    static int Call(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto logSz = 1;
+        auto off = SignExtend(cpu->ReadByte(CS, ip), logSz);
+        ip += 1 << logSz;
+        PushVal(cpu, logSz, ip);
+        ip += off;
+        return Normal;
+    }
+
+    static int Cmc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        cpu->state.flags ^= CF;
+        return Normal;
+    }
+
+    static int Grp3(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        enum Op3 { Test, Op3UD, Not, Neg, Mul, IMul, Div, IDiv };
+        auto& flags = cpu->state.flags;
+        auto& ip = cpu->state.ip;
+        auto modrm = GetModRM(cpu);
+        auto logSz = op & 1;
+        Calc calc(logSz);
+        calc.n[1] = ReadRM(cpu, prefixes, modrm, logSz);
+        switch (modrm.reg) {
+        case Test:
+            calc.n[0] = cpu->ReadMem(CS, ip, logSz);
+            calc.DoOp(calc.And);
+            break;
+        case Op3UD:
+            // TODO: #UD
+            break;
+        case Not:
+            calc.result = ~calc.n[0];
+            calc.flagsMask = 0;
+            WriteRM(cpu, prefixes, modrm, logSz, calc.result);
+            break;
+        case Neg:
+            calc.result = ~calc.n[0] + 1;
+            calc.SetResultFlags();
+            WriteRM(cpu, prefixes, modrm, logSz, calc.result);
+            break;
+        case Mul:
+            break;
+        case IMul:
+            break;
+        case Div:
+            break;
+        case IDiv:
+            break;
+        }
+        flags = calc.GetFlags(flags);
         return Normal;
     }
 
@@ -1069,13 +1328,13 @@ CPU::Operations::map1[256] = {
     TestAI, TestAI, Stos, Stos, Lods, Lods, Scas, Scas, // 0xA8
     MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, // 0xB0
     MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, // 0xB8
-    ShiftI, ShiftI, Ret, RetI, 0, 0, 0, 0, // 0xC0
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xC8
-    Shift1, Shift1, ShiftC, ShiftC, 0, 0, 0, 0, // 0xD0
+    ShiftI, ShiftI, RetI, Ret, Lxs, Lxs, MovI, MovI, // 0xC0
+    Nop, Nop, RetFI, RetF, Int3, Int, IntO, IRet, // 0xC8 // TODO: #UD
+    Shift1, Shift1, ShiftC, ShiftC, AAM, AAD, Nop, Xlat, // 0xD0 // TODO: #UD
     Esc, Esc, Esc, Esc, Esc, Esc, Esc, Esc, // 0xD8
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xE0
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xE8
-    0, 0, 0, 0, Hlt, 0, 0, 0, // 0xF0
+    Loopcc, Loopcc, Loopcc, Jcxz, In, In, Out, Out, // 0xE0
+    Call, Jmp, Jmp, Jmp, In, In, Out, Out, // 0xE8
+    0, Nop, 0, 0, Hlt, 0, 0, 0, // 0xF0 // TODO: #UD
     0, 0, 0, 0, 0, 0, 0, 0, // 0xF8
 };
 
@@ -1135,16 +1394,12 @@ auto CPU::ParsePrefixes() -> Prefixes
 
 auto CPU::ReadByte(SegmentRegister sreg, uint16_t addr) -> uint8_t
 {
-    unsigned char byte;
-    hook->ReadMem(state, &byte, sizeof(byte), CalcAddr(sreg, addr));
-    return byte;
+    return ReadByte(CalcAddr(sreg, addr));
 }
 
 uint16_t CPU::ReadWord(SegmentRegister sreg, uint16_t addr)
 {
-    unsigned char word[2];
-    hook->ReadMem(state, word, sizeof(word), CalcAddr(sreg, addr));
-    return word[1] * 0x100 + word[0];
+    return ReadWord(CalcAddr(sreg, addr));
 }
 
 auto CPU::ReadMem(SegmentRegister sreg, uint16_t addr, int logSz) -> RegVal
@@ -1152,10 +1407,10 @@ auto CPU::ReadMem(SegmentRegister sreg, uint16_t addr, int logSz) -> RegVal
     RegVal result;
     switch(logSz) {
     case 0:
-        result = ReadByte(sreg, addr);
+        result = ReadByte(CalcAddr(sreg, addr));
         break;
     case 1:
-        result = ReadWord(sreg, addr);
+        result = ReadWord(CalcAddr(sreg, addr));
         break;
     }
     return result;
@@ -1163,28 +1418,78 @@ auto CPU::ReadMem(SegmentRegister sreg, uint16_t addr, int logSz) -> RegVal
 
 void CPU::WriteByte(SegmentRegister sreg, uint16_t addr, uint8_t val)
 {
-    unsigned char byte = val;
-    hook->WriteMem(state, CalcAddr(sreg, addr), &byte, sizeof(byte));
+    WriteByte(CalcAddr(sreg, addr), val);
 }
 
 void CPU::WriteWord(SegmentRegister sreg, uint16_t addr, uint16_t val)
 {
-    unsigned char word[2];
-    for (int i = 0; i < sizeof(val); ++i) {
-        word[i] = val;
-        val >>= 8;
-    }
-    hook->WriteMem(state, CalcAddr(sreg, addr), &word, sizeof(word));
+    WriteWord(CalcAddr(sreg, addr), val);
 }
 
 void CPU::WriteMem(SegmentRegister sreg, uint16_t addr, int logSz, RegVal val)
 {
     switch(logSz) {
     case 0:
-        WriteByte(sreg, addr, val);
+        WriteByte(CalcAddr(sreg, addr), val);
         break;
     case 1:
-        WriteWord(sreg, addr, val);
+        WriteWord(CalcAddr(sreg, addr), val);
+        break;
+    }
+}
+
+auto CPU::ReadByte(uint32_t addr) -> uint8_t
+{
+    unsigned char byte;
+    hook->ReadMem(state, &byte, sizeof(byte), addr);
+    return byte;
+}
+
+uint16_t CPU::ReadWord(uint32_t addr)
+{
+    unsigned char word[2];
+    hook->ReadMem(state, word, sizeof(word), addr);
+    return word[1] * 0x100 + word[0];
+}
+
+auto CPU::ReadMem(uint32_t addr, int logSz) -> RegVal
+{
+    RegVal result;
+    switch(logSz) {
+    case 0:
+        result = ReadByte(addr);
+        break;
+    case 1:
+        result = ReadWord(addr);
+        break;
+    }
+    return result;
+}
+
+void CPU::WriteByte(uint32_t addr, uint8_t val)
+{
+    unsigned char byte = val;
+    hook->WriteMem(state, addr, &byte, sizeof(byte));
+}
+
+void CPU::WriteWord(uint32_t addr, uint16_t val)
+{
+    unsigned char word[2];
+    for (int i = 0; i < sizeof(val); ++i) {
+        word[i] = val;
+        val >>= 8;
+    }
+    hook->WriteMem(state, addr, &word, sizeof(word));
+}
+
+void CPU::WriteMem(uint32_t addr, int logSz, RegVal val)
+{
+    switch(logSz) {
+    case 0:
+        WriteByte(addr, val);
+        break;
+    case 1:
+        WriteWord(addr, val);
         break;
     }
 }
