@@ -1266,11 +1266,12 @@ struct CPU::Operations {
         auto modrm = GetModRM(cpu);
         auto logSz = op & 1;
         Calc calc(logSz);
-        calc.n[1] = ReadRM(cpu, prefixes, modrm, logSz);
+        calc.n[0] = ReadRM(cpu, prefixes, modrm, logSz);
         switch (modrm.reg) {
         case Test:
-            calc.n[0] = cpu->ReadMem(CS, ip, logSz);
+            calc.n[1] = cpu->ReadMem(CS, ip, logSz);
             calc.DoOp(calc.And);
+            flags = calc.GetFlags(flags);
             break;
         case Op3UD:
             // TODO: #UD
@@ -1279,22 +1280,37 @@ struct CPU::Operations {
             calc.result = ~calc.n[0];
             calc.flagsMask = 0;
             WriteRM(cpu, prefixes, modrm, logSz, calc.result);
+            flags = calc.GetFlags(flags);
             break;
         case Neg:
-            calc.result = ~calc.n[0] + 1;
-            calc.SetResultFlags();
+            calc.n[1] = 0;
+            calc.DoOp(calc.Sub, true);
             WriteRM(cpu, prefixes, modrm, logSz, calc.result);
+            flags = calc.GetFlags(flags);
             break;
         case Mul:
+            calc.n[1] = ReadReg(cpu, AX, logSz);
+            calc.result = calc.n[0] * calc.n[1];
+            if(logSz == 0) {
+                WriteReg(cpu, AX, logSz + 1, calc.result);
+                break;
+            }
             break;
         case IMul:
+            calc.n[0] = SignExtend(calc.n[0], logSz);
+            calc.n[1] = ReadReg(cpu, AX, logSz);
+            calc.n[1] = SignExtend(calc.n[1], logSz);
+            calc.result = calc.n[0] * calc.n[1];
+            if(logSz == 0) {
+                WriteReg(cpu, AX, logSz + 1, calc.result);
+                break;
+            }
             break;
         case Div:
             break;
         case IDiv:
             break;
         }
-        flags = calc.GetFlags(flags);
         return Normal;
     }
 
@@ -1334,7 +1350,7 @@ CPU::Operations::map1[256] = {
     Esc, Esc, Esc, Esc, Esc, Esc, Esc, Esc, // 0xD8
     Loopcc, Loopcc, Loopcc, Jcxz, In, In, Out, Out, // 0xE0
     Call, Jmp, Jmp, Jmp, In, In, Out, Out, // 0xE8
-    0, Nop, 0, 0, Hlt, 0, 0, 0, // 0xF0 // TODO: #UD
+    0, Nop, 0, 0, Hlt, Cmc, Grp3, Grp3, // 0xF0 // TODO: #UD
     0, 0, 0, 0, 0, 0, 0, 0, // 0xF8
 };
 
