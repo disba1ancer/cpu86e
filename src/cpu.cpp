@@ -51,6 +51,13 @@ auto SignExtend(RegVal in, int logSz) -> RegVal
     return ((in & mask) ^ smask) - smask;
 }
 
+auto SignExtend64(uint64_t in, int logSz) -> uint64_t
+{
+    auto smask = 0x80 << ((8 << logSz) - 8);
+    auto mask = 2 * smask - 1;
+    return ((in & mask) ^ smask) - smask;
+}
+
 static bool GetSign(RegVal val, int logSz)
 {
     return val >> ((8 << logSz) - 1);
@@ -1288,24 +1295,29 @@ struct CPU::Operations {
             WriteRM(cpu, prefixes, modrm, logSz, calc.result);
             flags = calc.GetFlags(flags);
             break;
-        case Mul:
-            calc.n[1] = ReadReg(cpu, AX, logSz);
-            calc.result = calc.n[0] * calc.n[1];
+        case Mul: {
+            uint64_t t = ReadReg(cpu, AX, logSz);
+            t *= calc.n[0];
             if(logSz == 0) {
-                WriteReg(cpu, AX, logSz + 1, calc.result);
+                WriteReg(cpu, AX, 1, t);
                 break;
             }
+            WriteReg(cpu, AX, logSz, t);
+            WriteReg(cpu, DX, logSz, t >> (8 << logSz));
             break;
-        case IMul:
-            calc.n[0] = SignExtend(calc.n[0], logSz);
-            calc.n[1] = ReadReg(cpu, AX, logSz);
-            calc.n[1] = SignExtend(calc.n[1], logSz);
-            calc.result = calc.n[0] * calc.n[1];
+        }
+        case IMul: {
+            uint64_t t = ReadReg(cpu, AX, logSz);
+            t = SignExtend64(t, logSz);
+            t *= SignExtend64(calc.n[0], logSz);
             if(logSz == 0) {
-                WriteReg(cpu, AX, logSz + 1, calc.result);
+                WriteReg(cpu, AX, logSz + 1, t);
                 break;
             }
+            WriteReg(cpu, AX, logSz, t);
+            WriteReg(cpu, DX, logSz, t >> (8 << logSz));
             break;
+        }
         case Div:
             break;
         case IDiv:
