@@ -1318,10 +1318,20 @@ struct CPU::Operations {
             WriteReg(cpu, DX, logSz, t >> (8 << logSz));
             break;
         }
-        case Div:
+        case Div: {
+            uint64_t t = ReadReg(cpu, DX, logSz);
+            t = (t << (8 << logSz)) + ReadReg(cpu, AX, logSz);
+            t = t / calc.n[0];
+            WriteReg(cpu, AX, logSz, t);
             break;
-        case IDiv:
+        }
+        case IDiv: {
+            uint64_t t = ReadReg(cpu, DX, logSz);
+            t = (t << (8 << logSz)) + ReadReg(cpu, AX, logSz);
+            t = t / calc.n[0];
+            WriteReg(cpu, AX, logSz, t);
             break;
+        }
         }
         return Normal;
     }
