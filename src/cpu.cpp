@@ -16,22 +16,38 @@ enum DoOpcodeResult {
 };
 
 char8_t map[] = {
-    1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0,
-    1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0,
-    1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0,
-    1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 1, 1, 0, 0, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    1, 1, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0,
-    1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 1,
+    1, 1, 1, 1, 0, 0, 0, 0,
+    1, 1, 1, 1, 0, 0, 0, 0,
+    1, 1, 1, 1, 0, 0, 0, 0,
+    1, 1, 1, 1, 0, 0, 0, 0,
+    1, 1, 1, 1, 0, 0, 0, 0,
+    1, 1, 1, 1, 0, 0, 0, 0,
+    1, 1, 1, 1, 0, 0, 0, 0,
+    1, 1, 1, 1, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 1, 1, 0, 0, 0, 0,
+    0, 1, 0, 1, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 1, 1, 1, 1, 1, 1,
+    1, 1, 1, 1, 1, 1, 1, 1,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 0, 0, 1, 1, 1, 1,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 1, 1, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 1, 1,
+    0, 0, 0, 0, 0, 0, 1, 1,
 };
 
 constexpr auto RegSize = sizeof(RegVal);
@@ -39,14 +55,14 @@ constexpr auto RegBits = 16;
 
 auto ZeroExtend(RegVal in, int logSz) -> RegVal
 {
-    auto smask = 0x80 << ((8 << logSz) - 7);
+    auto smask = 2 << ((8 << logSz) - 1);
     auto mask = smask - 1;
     return in & mask;
 }
 
 auto SignExtend(RegVal in, int logSz) -> RegVal
 {
-    auto smask = 0x80 << ((8 << logSz) - 8);
+    auto smask = 1 << ((8 << logSz) - 1);
     auto mask = 2 * smask - 1;
     return ((in & mask) ^ smask) - smask;
 }
@@ -413,7 +429,7 @@ struct CPU::Operations {
         auto regs = cpu->state.gpr;
         auto rh = (logSz == 0) * (reg & 4);
         auto shift = 2 * rh;
-        return regs[reg ^ rh] >> shift;
+        return ZeroExtend(regs[reg ^ rh] >> shift, logSz);
     }
 
     static void WriteReg(CPU* cpu, int reg, int logSz, RegVal val)
@@ -1303,7 +1319,11 @@ struct CPU::Operations {
                 break;
             }
             WriteReg(cpu, AX, logSz, t);
-            WriteReg(cpu, DX, logSz, t >> (8 << logSz));
+            t >>= (8 << logSz);
+            WriteReg(cpu, DX, logSz, t);
+            auto mulFlags = (CF | OF) * (t > 0);
+            flags ^= flags & (CF | OF);
+            flags ^= mulFlags;
             break;
         }
         case IMul: {
@@ -1311,25 +1331,67 @@ struct CPU::Operations {
             t = SignExtend64(t, logSz);
             t *= SignExtend64(calc.n[0], logSz);
             if(logSz == 0) {
-                WriteReg(cpu, AX, logSz + 1, t);
+                WriteReg(cpu, AX, 1, t);
                 break;
             }
             WriteReg(cpu, AX, logSz, t);
-            WriteReg(cpu, DX, logSz, t >> (8 << logSz));
+            t >>= (8 << logSz);
+            WriteReg(cpu, DX, logSz, t);
+            auto mulFlags = (CF | OF) * (t + 1 > 1);
+            flags ^= flags & (CF | OF);
+            flags ^= mulFlags;
             break;
         }
         case Div: {
-            uint64_t t = ReadReg(cpu, DX, logSz);
-            t = (t << (8 << logSz)) + ReadReg(cpu, AX, logSz);
-            t = t / calc.n[0];
-            WriteReg(cpu, AX, logSz, t);
+            if (logSz != 0) {
+                uint64_t t = ReadReg(cpu, DX, logSz);
+                if (t >= calc.n[0]) {
+                    // TODO: #DE
+                }
+                t = (t << (8 << logSz)) + ReadReg(cpu, AX, logSz);
+                WriteReg(cpu, AX, logSz, t / calc.n[0]);
+                WriteReg(cpu, DX, logSz, t % calc.n[0]);
+            } else {
+                auto t = ReadReg(cpu, AX, 1);
+                if ((t >> 8) >= calc.n[0]) {
+                    // TODO: #DE
+                }
+                WriteReg(cpu, AX, 0, t / calc.n[0]);
+                WriteReg(cpu, SP, 0, t % calc.n[0]);
+            }
             break;
         }
         case IDiv: {
-            uint64_t t = ReadReg(cpu, DX, logSz);
-            t = (t << (8 << logSz)) + ReadReg(cpu, AX, logSz);
-            t = t / calc.n[0];
-            WriteReg(cpu, AX, logSz, t);
+            bool sign0 = GetSign(calc.n[0], logSz);
+            calc.n[0] = SignExtend(calc.n[0], logSz);
+            calc.n[0] *= 1 - 2 * sign0;
+            if (logSz != 0) {
+                uint64_t t = ReadReg(cpu, DX, logSz);
+                auto sign1 = GetSign(t, logSz);
+                t <<= 8 << logSz;
+                t |= ReadReg(cpu, AX, logSz);
+                t = SignExtend64(t, logSz + 1);
+                int signMod = 1 - 2 * sign1;
+                t *= signMod;
+                if ((t >> (8 << logSz)) >= calc.n[0]) {
+                    // TODO: #DE
+                }
+                int sign = 1 - 2 * (sign0 ^ sign1);
+                WriteReg(cpu, AX, logSz, (t / calc.n[0]) * sign);
+                WriteReg(cpu, DX, logSz, (t % calc.n[0]) * signMod);
+            } else {
+                auto t = ReadReg(cpu, AX, 1);
+                auto sign1 = GetSign(t, 1);
+                t = SignExtend64(t, 1);
+                int signMod = 1 - 2 * sign1;
+                t *= signMod;
+                if ((t >> (8 << logSz)) >= calc.n[0]) {
+                    // TODO: #DE
+                }
+                int sign = 1 - 2 * (sign0 ^ sign1);
+                WriteReg(cpu, AX, 0, (t / calc.n[0]) * sign);
+                WriteReg(cpu, SP, 0, (t % calc.n[0]) * signMod);
+            }
             break;
         }
         }
