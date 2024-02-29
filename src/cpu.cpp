@@ -1398,6 +1398,42 @@ struct CPU::Operations {
         return Normal;
     }
 
+    static int Clc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        cpu->state.flags ^= cpu->state.flags & CF;
+        return Normal;
+    }
+
+    static int Stc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        cpu->state.flags |= CF;
+        return Normal;
+    }
+
+    static int Cli(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        cpu->state.flags ^= cpu->state.flags & IF;
+        return Normal;
+    }
+
+    static int Sti(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        cpu->state.flags |= IF;
+        return Normal;
+    }
+
+    static int Cld(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        cpu->state.flags ^= cpu->state.flags & DF;
+        return Normal;
+    }
+
+    static int Std(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        cpu->state.flags |= DF;
+        return Normal;
+    }
+
     using Op = int(CPU*, Prefixes, uint8_t op);
     static Op* map1[256];
 };
@@ -1435,7 +1471,7 @@ CPU::Operations::map1[256] = {
     Loopcc, Loopcc, Loopcc, Jcxz, In, In, Out, Out, // 0xE0
     Call, Jmp, Jmp, Jmp, In, In, Out, Out, // 0xE8
     0, Nop, 0, 0, Hlt, Cmc, Grp3, Grp3, // 0xF0 // TODO: #UD
-    0, 0, 0, 0, 0, 0, 0, 0, // 0xF8
+    Clc, Stc, Cli, Sti, Cld, Std, 0, 0, // 0xF8
 };
 
 int CPU::DoOpcode()
