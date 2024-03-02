@@ -88,6 +88,7 @@ enum Flags {
     AF = 16,
     ZF = 64,
     SF = 128,
+    TF = 0x100,
     IF = 0x200,
     DF = 0x400,
     OF = 0x800,
@@ -183,17 +184,12 @@ struct CPU::Prefixes {
 
 void CPU::Run()
 {
-    do {
-        auto interrupt = hook->InterruptCheck();
-        if ((state.flags & IF) && interrupt != IIOHook::NoInterrupt) {
-            InitInterrupt(interrupt);
-        }
-    } while (DoOpcode() != Halt);
+    while (DoStep() != Halt) {}
 }
 
 void CPU::Step()
 {
-    DoOpcode();
+    DoStep();
 }
 
 struct CPU::Calc {
@@ -1626,6 +1622,7 @@ void CPU::InitInterrupt(int interrupt)
     Operations::PushVal(this, 1, state.flags);
     Operations::PushVal(this, 1, state.sregs[CS]);
     Operations::PushVal(this, 1, state.ip);
+    state.flags ^= state.flags & (IF | TF);
     state.ip = off;
     state.sregs[CS] = seg;
 }
@@ -1636,21 +1633,32 @@ void CPU::SetInitState(CPUState &state)
     state.sregs[CS] = 0xFFFF;
 }
 
-int CPU::DoOpcode()
+int CPU::DoStep()
 {
     auto prevIP = state.ip;
+    auto oldFlags = state.flags;
     Prefixes prefixes = ParsePrefixes();
     auto op = ReadByte(CS, state.ip++);
+    int result;
     try {
-        auto result = Operations::map1[op](this, prefixes, op);
+        result = Operations::map1[op](this, prefixes, op);
         if (result == Repeat) {
             state.ip = prevIP;
         }
-        return result;
     } catch (CPUException& e) {
+        state.ip = prevIP;
         InitInterrupt(e.GetException());
+        result = Normal;
     }
-    return Normal;
+    oldFlags &= state.flags;
+    auto interrupt = hook->InterruptCheck();
+    if (oldFlags & TF) {
+        InitInterrupt(CPUException::DB);
+    }
+    if (interrupt == CPUException::NMI || ((oldFlags & IF) && interrupt != IIOHook::NoInterrupt)) {
+        InitInterrupt(interrupt);
+    }
+    return result;
 }
 
 auto CPU::ParsePrefixes() -> Prefixes

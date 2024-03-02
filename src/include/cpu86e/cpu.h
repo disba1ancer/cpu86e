@@ -59,7 +59,7 @@ private:
     struct Prefixes;
     struct Operations;
     struct Calc;
-    int DoOpcode();
+    int DoStep();
     auto ParsePrefixes() -> Prefixes;
     auto ReadByte(SegmentRegister sreg, uint16_t addr) -> uint8_t;
     auto ReadWord(SegmentRegister sreg, uint16_t addr) -> uint16_t;
