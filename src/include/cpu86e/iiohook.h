@@ -1,10 +1,10 @@
-#ifndef X86EMU_IIOHOOK_H
-#define X86EMU_IIOHOOK_H
+#ifndef CPU86E_IIOHOOK_H
+#define CPU86E_IIOHOOK_H
 
 #include <cstdint>
 #include <cstdlib>
 
-namespace x86emu {
+namespace cpu86e {
 
 using std::uint8_t;
 using std::uint16_t;
@@ -21,8 +21,10 @@ struct IIOHook
     virtual auto ReadIOWord(uint32_t addr) -> uint16_t = 0;
     virtual void WriteIOByte(uint32_t addr, uint8_t val) = 0;
     virtual void WriteIOWord(uint32_t addr, uint16_t val) = 0;
+    static constexpr int NoInterrupt = -1;
+    virtual int InterruptCheck() = 0;
 };
 
 } // namespace x86emu
 
-#endif // X86EMU_IIOHOOK_H
+#endif // CPU86E_IIOHOOK_H

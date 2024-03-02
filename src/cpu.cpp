@@ -1,6 +1,8 @@
-#include "include/x86emu/cpu.h"
+#include "include/cpu86e/cpu.h"
+#include <cstring>
+#include <exception>
 
-namespace x86emu {
+namespace cpu86e {
 
 namespace {
 
@@ -12,6 +14,7 @@ enum Prefix {
 
 enum DoOpcodeResult {
     Normal,
+    Repeat,
     Halt,
 };
 
@@ -43,7 +46,7 @@ char8_t map[] = {
     1, 1, 0, 0, 1, 1, 1, 1,
     0, 0, 0, 0, 0, 0, 0, 0,
     1, 1, 1, 1, 0, 0, 0, 0,
-    0, 0, 0, 0, 0, 0, 0, 0,
+    1, 1, 1, 1, 1, 1, 1, 1,
     0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 0, 0,
     0, 0, 0, 0, 0, 0, 1, 1,
@@ -91,11 +94,55 @@ enum Flags {
     FlagsMask = CF | PF | AF | ZF | SF | OF
 };
 
+struct CPUException : std::exception {
+public:
+    enum E {
+        DE,
+        DB,
+        NMI,
+        BP,
+        OF,
+        BR,
+        UD,
+        NM,
+        DF,
+        MF0,
+        TS,
+        NP,
+        SS,
+        GP,
+        PF,
+        MF,
+        AC,
+        MC,
+        XM,
+        VE
+    };
+
+    CPUException(E e) :
+        exception(e)
+    {}
+
+    const char *what() const
+    {
+        return "CPU Exception";
+    }
+
+    auto GetException() -> E
+    {
+        return exception;
+    }
+private:
+    E exception;
+};
+
 }
 
 CPU::CPU(IIOHook& hook) :
-    CPU({.ip = 0, .sregs = {0, 0xFFFF}}, hook)
-{}
+    hook(&hook)
+{
+    SetInitState(state);
+}
 
 CPU::CPU(const CPUState &initState, IIOHook& hook) :
     state(initState),
@@ -136,7 +183,12 @@ struct CPU::Prefixes {
 
 void CPU::Run()
 {
-    while (DoOpcode() == Normal) {}
+    do {
+        auto interrupt = hook->InterruptCheck();
+        if ((state.flags & IF) && interrupt != IIOHook::NoInterrupt) {
+            InitInterrupt(interrupt);
+        }
+    } while (DoOpcode() != Halt);
 }
 
 void CPU::Step()
@@ -170,7 +222,7 @@ struct CPU::Calc {
 
     bool GetSign(RegVal val)
     {
-        return ::x86emu::GetSign(val, logSz);
+        return ::cpu86e::GetSign(val, logSz);
     }
 
     void SetResultFlags() {
@@ -284,8 +336,7 @@ struct CPU::Calc {
             flags = (n[0] >> (n[1] - 1)) & 1;
             break;
         case Op2UD:
-            // TODO: #UD
-            break;
+            throw CPUException(CPUException::UD);
         case Sar:
             result = n[0] >> n[1];
             result = (result ^ mask) - mask;
@@ -294,33 +345,6 @@ struct CPU::Calc {
         }
         if (n[1] == 1) {
             flags |= OF * !!((n[0] ^ result) & mask);
-        }
-        SetResultFlags();
-    }
-
-
-    enum Op3 { Test, Op3UD, Not, Neg, Mul, IMul, Div, IDiv };
-
-    bool DoOp3(Op3 op)
-    {
-        switch (op) {
-        case Test:
-            break;
-        case Op3UD:
-            // TODO: #UD
-            break;
-        case Not:
-            break;
-        case Neg:
-            break;
-        case Mul:
-            break;
-        case IMul:
-            break;
-        case Div:
-            break;
-        case IDiv:
-            break;
         }
         SetResultFlags();
     }
@@ -338,18 +362,6 @@ struct CPU::Operations {
         uint8_t type;
         uint8_t reg;
     };
-
-    static void Interrupt(CPU* cpu, int num)
-    {
-        auto& state = cpu->state;
-        auto off = cpu->ReadWord(num * 4);
-        auto seg = cpu->ReadWord(num * 4 + 2);
-        PushVal(cpu, 1, state.flags);
-        PushVal(cpu, 1, state.sregs[CS]);
-        PushVal(cpu, 1, state.ip);
-        state.ip = off;
-        state.sregs[CS] = seg;
-    }
 
     static ModRM GetModRM(CPU* cpu)
     {
@@ -821,8 +833,7 @@ struct CPU::Operations {
         auto sreg = cpu->state.sregs;
         ModRM modRM = GetModRM(cpu);
         if (modRM.reg == CS) {
-            // TODO: #UD
-            return Normal;
+            throw CPUException(CPUException::UD);
         }
         int logSz = 1;
         RegVal temp;
@@ -841,7 +852,7 @@ struct CPU::Operations {
         ModRM modRM = GetModRM(cpu);
         int logSz = 1;
         if (modRM.type == modRM.Reg) {
-            // TODO: #UD
+            throw CPUException(CPUException::UD);
         }
         WriteReg(cpu, modRM.reg, logSz, modRM.addr);
         return Normal;
@@ -852,8 +863,7 @@ struct CPU::Operations {
         ModRM modRM = GetModRM(cpu);
         int logSz = 1;
         if (modRM.reg) {
-            // TODO: #UD
-            return Normal;
+            throw CPUException(CPUException::UD);
         }
         if (modRM.type == modRM.Reg) {
             PopReg(cpu, prefixes, modRM.addr);
@@ -970,6 +980,10 @@ struct CPU::Operations {
 
     static int Movs(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
+        auto counter = ReadReg(cpu, CX, 1);
+        if (prefixes.grp1 == PF3 && counter == 0) {
+            return Normal;
+        }
         auto& regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
         int logSz = op & 1;
@@ -979,12 +993,20 @@ struct CPU::Operations {
         int size = (1 << logSz) * (2 * !(flags & DF) - 1);
         regs[SI] += size;
         regs[DI] += size;
-        // TODO: handle rep prefix
+        if (prefixes.grp1 == PF3) {
+            counter -= 1;
+            WriteReg(cpu, CX, 1, counter);
+            return counter != 0;
+        }
         return Normal;
     }
 
     static int Cmps(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
+        auto counter = ReadReg(cpu, CX, 1);
+        if ((prefixes.grp1 == PF3 || prefixes.grp1 == PF2) && counter == 0) {
+            return Normal;
+        }
         auto& regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
         int logSz = op & 1;
@@ -997,24 +1019,44 @@ struct CPU::Operations {
         int size = (1 << logSz) * (2 * !(flags & DF) - 1);
         regs[SI] += size;
         regs[DI] += size;
-        // TODO: handle rep prefix
+        if (prefixes.grp1 == PF3) {
+            counter -= 1;
+            WriteReg(cpu, CX, 1, counter);
+            return counter != 0 || (flags & ZF);
+        } else if (prefixes.grp1 == PF2) {
+            counter -= 1;
+            WriteReg(cpu, CX, 1, counter);
+            return counter != 0 || !(flags & ZF);
+        }
         return Normal;
     }
 
     static int Stos(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
+        auto counter = ReadReg(cpu, CX, 1);
+        if (prefixes.grp1 == PF3 && counter == 0) {
+            return Normal;
+        }
         auto& regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
         int logSz = op & 1;
         cpu->WriteMem(ES, regs[DI], logSz, regs[AX]);
         int size = (1 << logSz) * (2 * !(flags & DF) - 1);
         regs[DI] += size;
-        // TODO: handle rep prefix
+        if (prefixes.grp1 == PF3) {
+            counter -= 1;
+            WriteReg(cpu, CX, 1, counter);
+            return counter != 0;
+        }
         return Normal;
     }
 
     static int Lods(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
+        auto counter = ReadReg(cpu, CX, 1);
+        if (prefixes.grp1 == PF3 && counter == 0) {
+            return Normal;
+        }
         auto& regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
         int logSz = op & 1;
@@ -1023,12 +1065,20 @@ struct CPU::Operations {
         WriteReg(cpu, AX, logSz, temp);
         int size = (1 << logSz) * (2 * !(flags & DF) - 1);
         regs[SI] += size;
-        // TODO: handle rep prefix
+        if (prefixes.grp1 == PF3) {
+            counter -= 1;
+            WriteReg(cpu, CX, 1, counter);
+            return counter != 0;
+        }
         return Normal;
     }
 
     static int Scas(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
+        auto counter = ReadReg(cpu, CX, 1);
+        if ((prefixes.grp1 == PF3 || prefixes.grp1 == PF2) && counter == 0) {
+            return Normal;
+        }
         auto& regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
         int logSz = op & 1;
@@ -1039,7 +1089,15 @@ struct CPU::Operations {
         flags = calc.GetFlags(flags);
         int size = (1 << logSz) * (2 * !(flags & DF) - 1);
         regs[DI] += size;
-        // TODO: handle rep prefix
+        if (prefixes.grp1 == PF3) {
+            counter -= 1;
+            WriteReg(cpu, CX, 1, counter);
+            return counter != 0 || (flags & ZF);
+        } else if (prefixes.grp1 == PF2) {
+            counter -= 1;
+            WriteReg(cpu, CX, 1, counter);
+            return counter != 0 || !(flags & ZF);
+        }
         return Normal;
     }
 
@@ -1120,8 +1178,7 @@ struct CPU::Operations {
     {
         ModRM modrm = GetModRM(cpu);
         if (modrm.type == modrm.Reg) {
-            // TODO: #UD
-            return Normal;
+            throw CPUException(CPUException::UD);
         }
         auto ptr = ReadRM(cpu, prefixes, modrm, 1);
         modrm.addr += 2;
@@ -1152,7 +1209,7 @@ struct CPU::Operations {
 
     static int Int3(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
-        Interrupt(cpu, 3);
+        cpu->InitInterrupt(CPUException::BP);
         return Normal;
     }
 
@@ -1160,14 +1217,14 @@ struct CPU::Operations {
     {
         auto& ip = cpu->state.ip;
         auto imm = cpu->ReadByte(CS, ip++);
-        Interrupt(cpu, imm);
+        cpu->InitInterrupt(imm);
         return Normal;
     }
 
     static int IntO(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         if (cpu->state.flags & OF) {
-            Interrupt(cpu, 4);
+            cpu->InitInterrupt(CPUException::OF);
         }
         return Normal;
     }
@@ -1207,7 +1264,6 @@ struct CPU::Operations {
     static int Jcxz(CPU* cpu, Prefixes prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
-        auto& flags = cpu->state.flags;
         auto off = SignExtend(cpu->ReadByte(CS, ip++), 0);
         auto cx = ReadReg(cpu, CX, 1);
         cx--;
@@ -1297,8 +1353,7 @@ struct CPU::Operations {
             flags = calc.GetFlags(flags);
             break;
         case Op3UD:
-            // TODO: #UD
-            break;
+            throw CPUException(CPUException::UD);
         case Not:
             calc.result = ~calc.n[0];
             calc.flagsMask = 0;
@@ -1346,7 +1401,7 @@ struct CPU::Operations {
             if (logSz != 0) {
                 uint64_t t = ReadReg(cpu, DX, logSz);
                 if (t >= calc.n[0]) {
-                    // TODO: #DE
+                    throw CPUException(CPUException::DE);
                 }
                 t = (t << (8 << logSz)) + ReadReg(cpu, AX, logSz);
                 WriteReg(cpu, AX, logSz, t / calc.n[0]);
@@ -1354,7 +1409,7 @@ struct CPU::Operations {
             } else {
                 auto t = ReadReg(cpu, AX, 1);
                 if ((t >> 8) >= calc.n[0]) {
-                    // TODO: #DE
+                    throw CPUException(CPUException::DE);
                 }
                 WriteReg(cpu, AX, 0, t / calc.n[0]);
                 WriteReg(cpu, SP, 0, t % calc.n[0]);
@@ -1374,7 +1429,7 @@ struct CPU::Operations {
                 int signMod = 1 - 2 * sign1;
                 t *= signMod;
                 if ((t >> (8 << logSz)) >= calc.n[0]) {
-                    // TODO: #DE
+                    throw CPUException(CPUException::DE);
                 }
                 int sign = 1 - 2 * (sign0 ^ sign1);
                 WriteReg(cpu, AX, logSz, (t / calc.n[0]) * sign);
@@ -1386,7 +1441,7 @@ struct CPU::Operations {
                 int signMod = 1 - 2 * sign1;
                 t *= signMod;
                 if ((t >> (8 << logSz)) >= calc.n[0]) {
-                    // TODO: #DE
+                    throw CPUException(CPUException::DE);
                 }
                 int sign = 1 - 2 * (sign0 ^ sign1);
                 WriteReg(cpu, AX, 0, (t / calc.n[0]) * sign);
@@ -1434,6 +1489,96 @@ struct CPU::Operations {
         return Normal;
     }
 
+    static int Grp4(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        enum Op3 { Inc, Dec };
+        auto& flags = cpu->state.flags;
+        auto modrm = GetModRM(cpu);
+        auto logSz = 0;
+        Calc calc(logSz);
+        calc.flagsMask ^= CF;
+        calc.n[0] = ReadRM(cpu, prefixes, modrm, logSz);
+        calc.n[1] = 1;
+        switch (modrm.reg) {
+        case Inc:
+            calc.DoOp(calc.Add);
+            break;
+        case Dec:
+            calc.DoOp(calc.Sub);
+            break;
+        default:
+            throw CPUException(CPUException::UD);
+            break;
+        }
+        flags = calc.GetFlags(flags);
+        WriteRM(cpu, prefixes, modrm, logSz, calc.result);
+        return Normal;
+    }
+
+    static int Grp5(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        enum Op3 { Inc, Dec, Call, CallF, Jmp, JmpF, Push };
+        auto& flags = cpu->state.flags;
+        auto& ip = cpu->state.ip;
+        auto modrm = GetModRM(cpu);
+        auto logSz = 1;
+        Calc calc(logSz);
+        calc.flagsMask ^= CF;
+        calc.n[1] = 1;
+        auto sreg = GetSeg(prefixes);
+        switch (modrm.reg) {
+        case Inc:
+            calc.n[0] = ReadRM(cpu, prefixes, modrm, logSz);
+            calc.DoOp(calc.Add);
+            flags = calc.GetFlags(flags);
+            WriteRM(cpu, prefixes, modrm, logSz, calc.result);
+            break;
+        case Dec:
+            calc.n[0] = ReadRM(cpu, prefixes, modrm, logSz);
+            calc.DoOp(calc.Sub);
+            flags = calc.GetFlags(flags);
+            WriteRM(cpu, prefixes, modrm, logSz, calc.result);
+            break;
+        case Call:
+            PushVal(cpu, 1, ip);
+            ip = ReadRM(cpu, prefixes, modrm, 1);
+            break;
+        case CallF:
+            if (modrm.type == modrm.Reg) {
+                throw CPUException(CPUException::UD);
+            }
+            PushVal(cpu, 1, cpu->state.sregs[CS]);
+            PushVal(cpu, 1, ip);
+            ip = cpu->ReadWord(sreg, modrm.addr);
+            modrm.addr += 2;
+            cpu->state.sregs[CS] = cpu->ReadWord(sreg, modrm.addr);
+            break;
+        case Jmp:
+            ip = ReadRM(cpu, prefixes, modrm, 1);
+            break;
+        case JmpF:
+            if (modrm.type == modrm.Reg) {
+                throw CPUException(CPUException::UD);
+            }
+            ip = cpu->ReadWord(sreg, modrm.addr);
+            modrm.addr += 2;
+            cpu->state.sregs[CS] = cpu->ReadWord(sreg, modrm.addr);
+            break;
+        case Push:
+            PushVal(cpu, logSz, ReadRM(cpu, prefixes, modrm, logSz));
+            break;
+        default:
+            throw CPUException(CPUException::UD);
+            break;
+        }
+        return Normal;
+    }
+
+    static int Ud(CPU* cpu, Prefixes prefixes, uint8_t op)
+    {
+        throw CPUException(CPUException::UD);
+    }
+
     using Op = int(CPU*, Prefixes, uint8_t op);
     static Op* map1[256];
 };
@@ -1441,7 +1586,7 @@ struct CPU::Operations {
 CPU::Operations::Op*
 CPU::Operations::map1[256] = {
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, Nop, // 8 // TODO: #UD instead NOP
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, Ud, // 8
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x10
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x18
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, DAA, // 0x20
@@ -1452,8 +1597,8 @@ CPU::Operations::map1[256] = {
     IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, // 0x48
     PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, // 0x50
     PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, // 0x58
-    Nop, Nop, Nop, Nop, 0, 0, 0, 0, // 0x60 // TODO: #UD
-    Nop, Nop, Nop, Nop, Nop, Nop, Nop, Nop, // 0x68 // TODO: #UD
+    Ud, Ud, Ud, Ud, 0, 0, 0, 0, // 0x60
+    Ud, Ud, Ud, Ud, Ud, Ud, Ud, Ud, // 0x68
     Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, // 0x70
     Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, // 0x78
     BiOpIm, BiOpIm, BiOpIm, BiOpIm, Test, Test, Xchg, Xchg, // 0x80
@@ -1465,21 +1610,47 @@ CPU::Operations::map1[256] = {
     MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, // 0xB0
     MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, MovImm, // 0xB8
     ShiftI, ShiftI, RetI, Ret, Lxs, Lxs, MovI, MovI, // 0xC0
-    Nop, Nop, RetFI, RetF, Int3, Int, IntO, IRet, // 0xC8 // TODO: #UD
-    Shift1, Shift1, ShiftC, ShiftC, AAM, AAD, Nop, Xlat, // 0xD0 // TODO: #UD
+    Ud, Ud, RetFI, RetF, Int3, Int, IntO, IRet, // 0xC8
+    Shift1, Shift1, ShiftC, ShiftC, AAM, AAD, Ud, Xlat, // 0xD0
     Esc, Esc, Esc, Esc, Esc, Esc, Esc, Esc, // 0xD8
     Loopcc, Loopcc, Loopcc, Jcxz, In, In, Out, Out, // 0xE0
     Call, Jmp, Jmp, Jmp, In, In, Out, Out, // 0xE8
-    0, Nop, 0, 0, Hlt, Cmc, Grp3, Grp3, // 0xF0 // TODO: #UD
-    Clc, Stc, Cli, Sti, Cld, Std, 0, 0, // 0xF8
+    0, Ud, 0, 0, Hlt, Cmc, Grp3, Grp3, // 0xF0
+    Clc, Stc, Cli, Sti, Cld, Std, Grp4, Grp5, // 0xF8
 };
+
+void CPU::InitInterrupt(int interrupt)
+{
+    auto off = ReadWord(interrupt * 4);
+    auto seg = ReadWord(interrupt * 4 + 2);
+    Operations::PushVal(this, 1, state.flags);
+    Operations::PushVal(this, 1, state.sregs[CS]);
+    Operations::PushVal(this, 1, state.ip);
+    state.ip = off;
+    state.sregs[CS] = seg;
+}
+
+void CPU::SetInitState(CPUState &state)
+{
+    std::memset(&state, 0, sizeof(state));
+    state.sregs[CS] = 0xFFFF;
+}
 
 int CPU::DoOpcode()
 {
     auto prevIP = state.ip;
     Prefixes prefixes = ParsePrefixes();
     auto op = ReadByte(CS, state.ip++);
-    return Operations::map1[op](this, prefixes, op);
+    try {
+        auto result = Operations::map1[op](this, prefixes, op);
+        if (result == Repeat) {
+            state.ip = prevIP;
+        }
+        return result;
+    } catch (CPUException& e) {
+        InitInterrupt(e.GetException());
+    }
+    return Normal;
 }
 
 auto CPU::ParsePrefixes() -> Prefixes

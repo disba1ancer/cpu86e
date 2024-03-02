@@ -1,10 +1,10 @@
-#ifndef X86EMU_CPU_H
-#define X86EMU_CPU_H
+#ifndef CPU86E_CPU_H
+#define CPU86E_CPU_H
 
-#include "x86emu/iiohook.h"
+#include "iiohook.h"
 #include <cstdint>
 
-namespace x86emu {
+namespace cpu86e {
 
 using std::uint8_t;
 using std::uint16_t;
@@ -52,6 +52,9 @@ public:
     void SetHook(IIOHook* hook);
     void Run();
     void Step();
+    void InitInterrupt(int interrupt);
+    static
+    void SetInitState(CPUState&state);
 private:
     struct Prefixes;
     struct Operations;
@@ -78,4 +81,4 @@ private:
 
 } // namespace x86emu
 
-#endif // X86EMU_CPU_H
+#endif // CPU86E_CPU_H
