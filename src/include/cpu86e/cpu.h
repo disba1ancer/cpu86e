@@ -54,7 +54,7 @@ public:
     void Step();
     void InitInterrupt(int interrupt);
     static
-    void SetInitState(CPUState&state);
+    auto InitState() -> CPUState;
 private:
     struct Prefixes;
     struct Operations;
@@ -77,6 +77,7 @@ private:
 
     CPUState state;
     IIOHook* hook;
+    RegVal oldflags;
 };
 
 } // namespace x86emu

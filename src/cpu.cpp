@@ -140,14 +140,14 @@ private:
 }
 
 CPU::CPU(IIOHook& hook) :
-    hook(&hook)
+    CPU(InitState(), hook)
 {
-    SetInitState(state);
 }
 
 CPU::CPU(const CPUState &initState, IIOHook& hook) :
     state(initState),
-    hook(&hook)
+    hook(&hook),
+    oldflags(0)
 {}
 
 void CPU::StoreState(CPUState &initState) const
@@ -157,6 +157,7 @@ void CPU::StoreState(CPUState &initState) const
 
 void CPU::LoadState(const CPUState &initState)
 {
+    oldflags = 0;
     state = initState;
 }
 
@@ -1630,16 +1631,25 @@ void CPU::InitInterrupt(int interrupt)
     state.sregs[CS] = seg;
 }
 
-void CPU::SetInitState(CPUState &state)
+auto CPU::InitState() -> CPUState
 {
-    std::memset(&state, 0, sizeof(state));
-    state.sregs[CS] = 0xFFFF;
+    return {.sregs = {0, 0xFFFF}};
 }
 
 int CPU::DoStep()
 {
+    oldflags &= state.flags;
+    auto interrupt = hook->InterruptCheck();
+    if (oldflags & TF) {
+        InitInterrupt(CPUException::DB);
+    }
+    if (interrupt == IIOHook::Halt) {
+        return Halt;
+    }
+    if (interrupt == CPUException::NMI || ((oldflags & IF) && interrupt != IIOHook::NoInterrupt)) {
+        InitInterrupt(interrupt);
+    }
     auto prevIP = state.ip;
-    auto oldFlags = state.flags;
     Prefixes prefixes = ParsePrefixes();
     auto op = ReadByte(CS, state.ip++);
     int result;
@@ -1652,14 +1662,6 @@ int CPU::DoStep()
         state.ip = prevIP;
         InitInterrupt(e.GetException());
         result = Normal;
-    }
-    oldFlags &= state.flags;
-    auto interrupt = hook->InterruptCheck();
-    if (oldFlags & TF) {
-        InitInterrupt(CPUException::DB);
-    }
-    if (interrupt == CPUException::NMI || ((oldFlags & IF) && interrupt != IIOHook::NoInterrupt)) {
-        InitInterrupt(interrupt);
     }
     return result;
 }

@@ -22,6 +22,7 @@ struct IIOHook
     virtual void WriteIOByte(uint32_t addr, uint8_t val) = 0;
     virtual void WriteIOWord(uint32_t addr, uint16_t val) = 0;
     static constexpr int NoInterrupt = -1;
+    static constexpr int Halt = -2;
     virtual int InterruptCheck() = 0;
 };
 
