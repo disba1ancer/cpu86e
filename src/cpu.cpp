@@ -611,6 +611,9 @@ struct CPU::Operations {
         auto& ax = cpu->state.gpr[AX];
         auto& flags = cpu->state.flags;
         auto imm = cpu->ReadByte(CS, ip);
+        if (imm == 0) {
+            throw CPUException(CPUException::DE);
+        }
         auto t = ax & 0xFF;
         ax = (t / imm << 8) | (t % imm);
         Calc calc(0);
