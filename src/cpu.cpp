@@ -1649,6 +1649,7 @@ int CPU::DoStep()
     if (interrupt == CPUException::NMI || ((oldflags & IF) && interrupt != IIOHook::NoInterrupt)) {
         InitInterrupt(interrupt);
     }
+    oldflags = state.flags;
     auto prevIP = state.ip;
     Prefixes prefixes = ParsePrefixes();
     auto op = ReadByte(CS, state.ip++);
