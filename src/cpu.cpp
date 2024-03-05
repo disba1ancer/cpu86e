@@ -14,6 +14,7 @@ enum Prefix {
 
 enum DoOpcodeResult {
     Normal,
+    Continue,
     Repeat,
     Halt,
 };
@@ -497,7 +498,7 @@ struct CPU::Operations {
         }
     }
 
-    static int BiOp(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int BiOp(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         auto& flags =cpu->state.flags;
@@ -510,7 +511,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int BiOpAI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int BiOpAI(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         prefixes.segment = CS;
         ModRM modRM = {.type = modRM.Addr, .reg = AX};
@@ -526,7 +527,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int BiOpIm(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int BiOpIm(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         auto& flags = cpu->state.flags;
@@ -556,29 +557,35 @@ struct CPU::Operations {
         return result;
     }
 
-    static int PushSReg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PushSReg(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         PushVal(cpu, 1, cpu->state.sregs[(op >> 3) & 3]);
         return Normal;
     }
 
-    static int PopSReg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PopSReg(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->state.sregs[(op >> 3) & 3] = PopVal(cpu, 1);
         return Normal;
     }
 
-    static int Nop(CPU*, Prefixes, uint8_t)
+    static int SegOvr(CPU* cpu, Prefixes& prefixes, uint8_t op)
+    {
+        prefixes.segment = (op >> 3) & 3;
+        return Continue;
+    }
+
+    static int Nop(CPU*, Prefixes&, uint8_t)
     {
         return Normal;
     }
 
-    static int Hlt(CPU*, Prefixes, uint8_t)
+    static int Hlt(CPU*, Prefixes&, uint8_t)
     {
         return Halt;
     }
 
-    static int AAA(CPU* cpu, Prefixes, uint8_t)
+    static int AAA(CPU* cpu, Prefixes&, uint8_t)
     {
         if ((cpu->state.gpr[AX] & 0xF) > 9 || (cpu->state.flags & AF)) {
             cpu->state.gpr[AX] += 0x106;
@@ -590,7 +597,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int AAS(CPU* cpu, Prefixes, uint8_t)
+    static int AAS(CPU* cpu, Prefixes&, uint8_t)
     {
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
@@ -606,7 +613,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int AAM(CPU* cpu, Prefixes, uint8_t)
+    static int AAM(CPU* cpu, Prefixes&, uint8_t)
     {
         auto& ip = cpu->state.ip;
         auto& ax = cpu->state.gpr[AX];
@@ -624,7 +631,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int AAD(CPU* cpu, Prefixes, uint8_t)
+    static int AAD(CPU* cpu, Prefixes&, uint8_t)
     {
         auto& ip = cpu->state.ip;
         auto& ax = cpu->state.gpr[AX];
@@ -639,7 +646,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int DAA(CPU* cpu, Prefixes, uint8_t)
+    static int DAA(CPU* cpu, Prefixes&, uint8_t)
     {
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
@@ -655,7 +662,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int DAS(CPU* cpu, Prefixes, uint8_t)
+    static int DAS(CPU* cpu, Prefixes&, uint8_t)
     {
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
@@ -678,7 +685,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int IncDec(CPU* cpu, Prefixes, uint8_t op)
+    static int IncDec(CPU* cpu, Prefixes&, uint8_t op)
     {
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
@@ -692,19 +699,19 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int PushReg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PushReg(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         PushVal(cpu, 1, cpu->state.gpr[op & 3]);
         return Normal;
     }
 
-    static int PopReg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PopReg(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->state.gpr[op & 3] = PopVal(cpu, 1);
         return Normal;
     }
 
-    static int Jcc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Jcc(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto& flags = cpu->state.flags;
@@ -741,7 +748,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Test(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Test(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         auto& flags =cpu->state.flags;
@@ -752,7 +759,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int TestAI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int TestAI(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         prefixes.segment = CS;
         ModRM modRM = {.type = modRM.Addr, .reg = AX};
@@ -766,7 +773,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Xchg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Xchg(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         int logSz = op & 1;
@@ -784,7 +791,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Mov(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Mov(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         int logSz = op & 1;
@@ -793,7 +800,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int MovR(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int MovR(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         int logSz = op & 1;
@@ -802,7 +809,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int MovI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int MovI(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         ModRM modRM = GetModRM(cpu);
@@ -813,7 +820,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int MovSreg(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int MovSreg(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto sreg = cpu->state.sregs;
         ModRM modRM = GetModRM(cpu);
@@ -828,7 +835,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int MovSregR(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int MovSregR(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto sreg = cpu->state.sregs;
         ModRM modRM = GetModRM(cpu);
@@ -847,7 +854,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Lea(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Lea(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         int logSz = 1;
@@ -858,7 +865,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int PopRM(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PopRM(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         int logSz = 1;
@@ -877,7 +884,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int XchgA(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int XchgA(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         int logSz = op & 1;
         auto reg = Register(op & 7);
@@ -888,7 +895,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Cbw(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Cbw(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         int logSz = 0;
         auto temp = SignExtend(ReadReg(cpu, AX, logSz), logSz);
@@ -896,7 +903,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Cwd(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Cwd(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         int logSz = 1;
         auto temp = SignExtend(ReadReg(cpu, AX, logSz), logSz);
@@ -904,7 +911,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int CallF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int CallF(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto& cs = cpu->state.sregs[CS];
@@ -920,41 +927,41 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Esc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Esc(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         GetModRM(cpu);
         return Normal;
     }
 
-    static int PushF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PushF(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         int logSz = 1;
         PushVal(cpu, logSz, cpu->state.flags);
         return Normal;
     }
 
-    static int PopF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int PopF(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         int logSz = 1;
         cpu->state.flags = PopVal(cpu, logSz);
         return Normal;
     }
 
-    static int SahF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int SahF(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& flags = cpu->state.flags;
         flags ^= (flags & 0xFF) ^ ReadReg(cpu, SP, 0);
         return Normal;
     }
 
-    static int LahF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int LahF(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& flags = cpu->state.flags;
         WriteReg(cpu, SP, 0, flags);
         return Normal;
     }
 
-    static int MovAxM(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int MovAxM(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         int logSz = op & 1;
@@ -966,7 +973,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int MovMAx(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int MovMAx(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ax = cpu->state.gpr[AX];
         auto& ip = cpu->state.ip;
@@ -978,7 +985,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Movs(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Movs(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto counter = ReadReg(cpu, CX, 1);
         if (prefixes.grp1 == PF3 && counter == 0) {
@@ -1001,7 +1008,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Cmps(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Cmps(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto counter = ReadReg(cpu, CX, 1);
         if ((prefixes.grp1 == PF3 || prefixes.grp1 == PF2) && counter == 0) {
@@ -1031,7 +1038,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Stos(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Stos(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto counter = ReadReg(cpu, CX, 1);
         if (prefixes.grp1 == PF3 && counter == 0) {
@@ -1051,7 +1058,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Lods(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Lods(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto counter = ReadReg(cpu, CX, 1);
         if (prefixes.grp1 == PF3 && counter == 0) {
@@ -1073,7 +1080,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Scas(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Scas(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto counter = ReadReg(cpu, CX, 1);
         if ((prefixes.grp1 == PF3 || prefixes.grp1 == PF2) && counter == 0) {
@@ -1101,7 +1108,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int MovImm(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int MovImm(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         int logSz = !!(op & 8);
         auto& ip = cpu->state.ip;
@@ -1111,7 +1118,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int ShiftI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int ShiftI(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto& flags = cpu->state.flags;
@@ -1126,7 +1133,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Shift1(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Shift1(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto& flags = cpu->state.flags;
@@ -1141,7 +1148,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int ShiftC(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int ShiftC(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto& flags = cpu->state.flags;
@@ -1156,7 +1163,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Ret(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Ret(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto addr = PopVal(cpu, 1);
@@ -1164,7 +1171,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int RetI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int RetI(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto imm = cpu->ReadWord(CS, ip);
@@ -1174,7 +1181,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Lxs(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Lxs(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modrm = GetModRM(cpu);
         if (modrm.type == modrm.Reg) {
@@ -1187,7 +1194,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int RetF(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int RetF(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto& cs = cpu->state.sregs[CS];
@@ -1196,7 +1203,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int RetFI(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int RetFI(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto& cs = cpu->state.sregs[CS];
@@ -1207,13 +1214,13 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Int3(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Int3(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->InitInterrupt(CPUException::BP);
         return Normal;
     }
 
-    static int Int(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Int(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto imm = cpu->ReadByte(CS, ip++);
@@ -1221,7 +1228,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int IntO(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int IntO(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         if (cpu->state.flags & OF) {
             cpu->InitInterrupt(CPUException::OF);
@@ -1229,7 +1236,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int IRet(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int IRet(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& state = cpu->state;
         state.ip = PopVal(cpu, 1);
@@ -1238,7 +1245,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Xlat(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Xlat(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto regs = cpu->state.gpr;
         auto seg = GetSeg(prefixes);
@@ -1247,7 +1254,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Loopcc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Loopcc(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto& flags = cpu->state.flags;
@@ -1261,7 +1268,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Jcxz(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Jcxz(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto off = SignExtend(cpu->ReadByte(CS, ip++), 0);
@@ -1272,7 +1279,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int In(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int In(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         uint16_t port;
@@ -1292,7 +1299,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Out(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Out(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         uint16_t port;
@@ -1311,7 +1318,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Jmp(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Jmp(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto logSz = !!(op & 2);
@@ -1320,7 +1327,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Call(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Call(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto logSz = 1;
@@ -1331,13 +1338,13 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Cmc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Cmc(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->state.flags ^= CF;
         return Normal;
     }
 
-    static int Grp3(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Grp3(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         enum Op3 { Test, Op3UD, Not, Neg, Mul, IMul, Div, IDiv };
         auto& flags = cpu->state.flags;
@@ -1453,43 +1460,43 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Clc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Clc(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->state.flags ^= cpu->state.flags & CF;
         return Normal;
     }
 
-    static int Stc(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Stc(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->state.flags |= CF;
         return Normal;
     }
 
-    static int Cli(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Cli(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->state.flags ^= cpu->state.flags & IF;
         return Normal;
     }
 
-    static int Sti(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Sti(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->state.flags |= IF;
         return Normal;
     }
 
-    static int Cld(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Cld(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->state.flags ^= cpu->state.flags & DF;
         return Normal;
     }
 
-    static int Std(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Std(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->state.flags |= DF;
         return Normal;
     }
 
-    static int Grp4(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Grp4(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         enum Op3 { Inc, Dec };
         auto& flags = cpu->state.flags;
@@ -1515,7 +1522,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Grp5(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Grp5(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         enum Op3 { Inc, Dec, Call, CallF, Jmp, JmpF, Push };
         auto& flags = cpu->state.flags;
@@ -1574,12 +1581,24 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int Ud(CPU* cpu, Prefixes prefixes, uint8_t op)
+    static int Ud(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         throw CPUException(CPUException::UD);
     }
 
-    using Op = int(CPU*, Prefixes, uint8_t op);
+    static int Lock(CPU* cpu, Prefixes& prefixes, uint8_t op)
+    {
+        prefixes.grp1 = PF0;
+        throw Continue;
+    }
+
+    static int Rep(CPU* cpu, Prefixes& prefixes, uint8_t op)
+    {
+        prefixes.grp1 = PF2 + (op & 1);
+        throw Continue;
+    }
+
+    using Op = int(CPU*, Prefixes&, uint8_t op);
     static Op* map1[256];
 };
 
@@ -1589,15 +1608,15 @@ CPU::Operations::map1[256] = {
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, Ud, // 8
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x10
     BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x18
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, DAA, // 0x20
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, DAS, // 0x28
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, AAA, // 0x30
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, 0, AAS, // 0x38
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, SegOvr, DAA, // 0x20
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, SegOvr, DAS, // 0x28
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, SegOvr, AAA, // 0x30
+    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, SegOvr, AAS, // 0x38
     IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, // 0x40
     IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, // 0x48
     PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, // 0x50
     PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, // 0x58
-    Ud, Ud, Ud, Ud, 0, 0, 0, 0, // 0x60
+    Ud, Ud, Ud, Ud, Ud, Ud, Ud, Ud, // 0x60
     Ud, Ud, Ud, Ud, Ud, Ud, Ud, Ud, // 0x68
     Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, // 0x70
     Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, // 0x78
@@ -1615,7 +1634,7 @@ CPU::Operations::map1[256] = {
     Esc, Esc, Esc, Esc, Esc, Esc, Esc, Esc, // 0xD8
     Loopcc, Loopcc, Loopcc, Jcxz, In, In, Out, Out, // 0xE0
     Call, Jmp, Jmp, Jmp, In, In, Out, Out, // 0xE8
-    0, Ud, 0, 0, Hlt, Cmc, Grp3, Grp3, // 0xF0
+    Lock, Ud, Rep, Rep, Hlt, Cmc, Grp3, Grp3, // 0xF0
     Clc, Stc, Cli, Sti, Cld, Std, Grp4, Grp5, // 0xF8
 };
 
@@ -1651,11 +1670,13 @@ int CPU::DoStep()
     }
     oldflags = state.flags;
     auto prevIP = state.ip;
-    Prefixes prefixes = ParsePrefixes();
-    auto op = ReadByte(CS, state.ip++);
+    Prefixes prefixes = { 0, SegReserve };
     int result;
     try {
-        result = Operations::map1[op](this, prefixes, op);
+        uint8_t op;
+        do {
+            op = ReadByte(CS, state.ip++);
+        } while ((result = Operations::map1[op](this, prefixes, op)) == Continue);
         if (result == Repeat) {
             state.ip = prevIP;
         }
