@@ -134,6 +134,7 @@ uint16_t TestPC::ReadIOWord(uint32_t addr)
 void TestPC::WriteIOByte(uint32_t addr, uint8_t val)
 {
     if (addr == 0 && val & 1) {
+        cpu.SetINTR(cpu.NoInterrupt);
         backBuffer = !backBuffer;
     }
 }
