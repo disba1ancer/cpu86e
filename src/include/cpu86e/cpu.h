@@ -3,6 +3,7 @@
 
 #include "iiohook.h"
 #include <cstdint>
+#include <atomic>
 
 namespace cpu86e {
 
@@ -50,11 +51,15 @@ public:
     auto State() -> CPUState&;
     auto State() const -> const CPUState&;
     void SetHook(IIOHook* hook);
-    void Run();
+    int Run(int steps = -1);
     void Step();
     void InitInterrupt(int interrupt);
     static
     auto InitState() -> CPUState;
+    void SetNMI(int level);
+    void SetHalt(int level);
+    static constexpr int NoInterrupt = -1;
+    void SetINTR(int interrupt);
 private:
     struct Prefixes;
     struct Operations;
@@ -78,6 +83,9 @@ private:
     CPUState state;
     IIOHook* hook;
     RegVal oldflags;
+    std::atomic_bool nmi;
+    std::atomic_bool halt;
+    std::atomic_int intr;
 };
 
 } // namespace x86emu

@@ -184,9 +184,17 @@ struct CPU::Prefixes {
     unsigned grp4:1;
 };
 
-void CPU::Run()
+int CPU::Run(int steps)
 {
-    while (DoStep() != Halt) {}
+    while (true) {
+        auto r = DoStep();
+        if (r == Halt) {
+            return 1;
+        }
+        if (steps != -1 && --steps <= 0) {
+            return 0;
+        }
+    }
 }
 
 void CPU::Step()
@@ -1655,28 +1663,51 @@ auto CPU::InitState() -> CPUState
     return {.sregs = {0, 0xFFFF}};
 }
 
+void CPU::SetNMI(int level)
+{
+    halt.store(0, std::memory_order_relaxed);
+    nmi.store(level, std::memory_order_release);
+}
+
+void CPU::SetHalt(int level)
+{
+    halt.store(level, std::memory_order_release);
+}
+
+void CPU::SetINTR(int interrupt)
+{
+    halt.store(0, std::memory_order_relaxed);
+    intr.store(interrupt, std::memory_order_release);
+}
+
 int CPU::DoStep()
 {
-    oldflags &= state.flags;
-    auto interrupt = hook->InterruptCheck();
-    if (oldflags & TF) {
-        InitInterrupt(CPUException::DB);
-    }
-    if (interrupt == IIOHook::Halt) {
-        return Halt;
-    }
-    if (interrupt == CPUException::NMI || ((oldflags & IF) && interrupt != IIOHook::NoInterrupt)) {
-        InitInterrupt(interrupt);
-    }
-    oldflags = state.flags;
-    auto prevIP = state.ip;
-    Prefixes prefixes = { 0, SegReserve };
     int result;
+    auto prevIP = state.ip;
     try {
-        uint8_t op;
+        oldflags &= state.flags;
+        if (halt.load(std::memory_order_acquire)) {
+            return Halt;
+        }
+        if (oldflags & TF) {
+            InitInterrupt(CPUException::DB);
+        }
+        if (nmi.load(std::memory_order_acquire)) {
+            InitInterrupt(CPUException::NMI);
+        }
+        if (oldflags & IF) {
+            auto interrupt = intr.load(std::memory_order_acquire);
+            if (interrupt != NoInterrupt) {
+                InitInterrupt(interrupt);
+            }
+        }
+        oldflags = state.flags;
+        prevIP = state.ip;
+        Prefixes prefixes = { 0, SegReserve };
         do {
-            op = ReadByte(CS, state.ip++);
-        } while ((result = Operations::map1[op](this, prefixes, op)) == Continue);
+            auto op = ReadByte(CS, state.ip++);
+            result = Operations::map1[op](this, prefixes, op);
+        } while (result == Continue);
         if (result == Repeat) {
             state.ip = prevIP;
         }
@@ -1796,7 +1827,7 @@ uint16_t CPU::ReadWord(uint32_t addr)
 
 auto CPU::ReadMem(uint32_t addr, int logSz) -> RegVal
 {
-    RegVal result;
+    RegVal result = 0;
     switch(logSz) {
     case 0:
         result = ReadByte(addr);

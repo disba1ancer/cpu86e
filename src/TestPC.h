@@ -2,7 +2,7 @@
 #define TESTPC_H
 
 #include "cpu86e/cpu.h"
-#include <swal/win_headers.h>
+#include <swal/window.h>
 #include <cpu86e/iiohook.h>
 #include <vector>
 
@@ -20,18 +20,15 @@ public:
     uint16_t ReadIOWord(uint32_t addr);
     void WriteIOByte(uint32_t addr, uint8_t val);
     void WriteIOWord(uint32_t addr, uint16_t val);
-    int InterruptCheck();
 
 private:
     static ATOM MyRegisterClass();
 	LRESULT WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
-    bool HandleMessages();
 
     static constexpr
-    auto ProgramSize = 0x10000;
+    auto ProgramSize = 0x10;
     static constexpr
-    auto ProgramStart = 0xF0000;
-    std::vector<unsigned char> programMemory;
+    auto ProgramStart = 0xFFFF0;
     static constexpr
     auto MainMemorySize = 0xA0000;
     std::vector<unsigned char> mainMemory;
@@ -40,8 +37,9 @@ private:
     static constexpr
     auto FrameBufferSize = 0x10000;
     std::vector<unsigned char> frameBuffers;
-    int frontBuffer, backBuffer;
+    int backBuffer;
     cpu86e::CPU cpu;
+    swal::Window window;
     MSG msg;
 };
 
