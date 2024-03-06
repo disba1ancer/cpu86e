@@ -41,6 +41,10 @@ private:
     cpu86e::CPU cpu;
     swal::Window window;
     MSG msg;
+    struct BitmapInfo {
+        BITMAPINFOHEADER header;
+        RGBQUAD palete[256];
+    } bmi;
 };
 
 #endif // TESTPC_H

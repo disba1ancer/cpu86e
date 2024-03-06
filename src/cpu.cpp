@@ -148,7 +148,10 @@ CPU::CPU(IIOHook& hook) :
 CPU::CPU(const CPUState &initState, IIOHook& hook) :
     state(initState),
     hook(&hook),
-    oldflags(0)
+    oldflags(0),
+    nmi(0),
+    halt(0),
+    intr(NoInterrupt)
 {}
 
 void CPU::StoreState(CPUState &initState) const
@@ -1011,7 +1014,7 @@ struct CPU::Operations {
         if (prefixes.grp1 == PF3) {
             counter -= 1;
             WriteReg(cpu, CX, 1, counter);
-            return counter != 0;
+            return (counter != 0) * Repeat;
         }
         return Normal;
     }
@@ -1037,11 +1040,11 @@ struct CPU::Operations {
         if (prefixes.grp1 == PF3) {
             counter -= 1;
             WriteReg(cpu, CX, 1, counter);
-            return counter != 0 || (flags & ZF);
+            return (counter != 0 || (flags & ZF)) * Repeat;
         } else if (prefixes.grp1 == PF2) {
             counter -= 1;
             WriteReg(cpu, CX, 1, counter);
-            return counter != 0 || !(flags & ZF);
+            return (counter != 0 || !(flags & ZF)) * Repeat;
         }
         return Normal;
     }
@@ -1061,7 +1064,7 @@ struct CPU::Operations {
         if (prefixes.grp1 == PF3) {
             counter -= 1;
             WriteReg(cpu, CX, 1, counter);
-            return counter != 0;
+            return (counter != 0) * Repeat;
         }
         return Normal;
     }
@@ -1083,7 +1086,7 @@ struct CPU::Operations {
         if (prefixes.grp1 == PF3) {
             counter -= 1;
             WriteReg(cpu, CX, 1, counter);
-            return counter != 0;
+            return (counter != 0) * Repeat;
         }
         return Normal;
     }
@@ -1107,11 +1110,11 @@ struct CPU::Operations {
         if (prefixes.grp1 == PF3) {
             counter -= 1;
             WriteReg(cpu, CX, 1, counter);
-            return counter != 0 || (flags & ZF);
+            return (counter != 0 || (flags & ZF)) * Repeat;
         } else if (prefixes.grp1 == PF2) {
             counter -= 1;
             WriteReg(cpu, CX, 1, counter);
-            return counter != 0 || !(flags & ZF);
+            return (counter != 0 || !(flags & ZF)) * Repeat;
         }
         return Normal;
     }
@@ -1318,7 +1321,7 @@ struct CPU::Operations {
         }
         auto logSz = op & 1;
         RegVal temp = ReadReg(cpu, AX, logSz);
-        if (logSz) {
+        if (!logSz) {
             cpu->hook->WriteIOByte(port, temp);
         } else {
             cpu->hook->WriteIOWord(port, temp);
@@ -1329,9 +1332,22 @@ struct CPU::Operations {
     static int Jmp(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
-        auto logSz = !!(op & 2);
+        auto logSz = !(op & 2);
         auto off = SignExtend(cpu->ReadByte(CS, ip), logSz);
         ip += off + (1 << logSz);
+        return Normal;
+    }
+
+    static int JmpF(CPU* cpu, Prefixes& prefixes, uint8_t op)
+    {
+        auto& ip = cpu->state.ip;
+        auto& cs = cpu->state.sregs[CS];
+        auto logSz = 1;
+        auto off = cpu->ReadMem(CS, ip, logSz);
+        ip += 1 << logSz;
+        auto seg = cpu->ReadWord(CS, ip);
+        cs = seg;
+        ip = off;
         return Normal;
     }
 
@@ -1597,13 +1613,13 @@ struct CPU::Operations {
     static int Lock(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         prefixes.grp1 = PF0;
-        throw Continue;
+        return Continue;
     }
 
     static int Rep(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         prefixes.grp1 = PF2 + (op & 1);
-        throw Continue;
+        return Continue;
     }
 
     using Op = int(CPU*, Prefixes&, uint8_t op);
@@ -1641,7 +1657,7 @@ CPU::Operations::map1[256] = {
     Shift1, Shift1, ShiftC, ShiftC, AAM, AAD, Ud, Xlat, // 0xD0
     Esc, Esc, Esc, Esc, Esc, Esc, Esc, Esc, // 0xD8
     Loopcc, Loopcc, Loopcc, Jcxz, In, In, Out, Out, // 0xE0
-    Call, Jmp, Jmp, Jmp, In, In, Out, Out, // 0xE8
+    Call, Jmp, JmpF, Jmp, In, In, Out, Out, // 0xE8
     Lock, Ud, Rep, Rep, Hlt, Cmc, Grp3, Grp3, // 0xF0
     Clc, Stc, Cli, Sti, Cld, Std, Grp4, Grp5, // 0xF8
 };

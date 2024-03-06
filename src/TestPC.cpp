@@ -1,5 +1,6 @@
 #include "TestPC.h"
 #include <swal/window.h>
+#include <fstream>
 
 namespace {
 
@@ -24,7 +25,14 @@ TestPC::TestPC() :
     backBuffer(1),
     cpu(*this),
     window(MyRegisterClass(), hInstance, this)
-{}
+{
+    std::fill(frameBuffers.begin(), frameBuffers.end(), 0);
+    std::ifstream image("testpc.img", std::ios::binary);
+    if (image.fail()) {
+        throw std::runtime_error("FAIL!");
+    }
+    image.read(reinterpret_cast<char*>(mainMemory.data()), MainMemorySize);
+}
 
 ATOM TestPC::MyRegisterClass()
 {
@@ -54,11 +62,30 @@ LRESULT TestPC::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 	switch (message) {
     case WM_TIMER: {
         cpu.SetINTR(VSync);
-        window.InvalidateRect();
+        window.InvalidateRect(false);
         break;
     }
     case WM_PAINT: {
         auto dc = wnd.BeginPaint();
+        auto& bmih = bmi.header;
+        bmih.biSize = sizeof(bmih);
+        bmih.biWidth = 320;
+        bmih.biHeight = 200;
+        bmih.biPlanes = 1;
+        bmih.biBitCount = 8;
+        bmih.biCompression = BI_RGB;
+        bmih.biSizeImage = 0;
+        bmih.biXPelsPerMeter = 3780;
+        bmih.biYPelsPerMeter = 3780;
+        bmih.biClrUsed = 0;
+        bmih.biClrImportant = 0;
+        for (int i = 0; i < 256; ++i) {
+            unsigned char* color = frameBuffers.data() + !backBuffer * FrameBufferSize + 64000 + i * 4;
+            bmi.palete[i].rgbBlue = color[0];
+            bmi.palete[i].rgbGreen = color[1];
+            bmi.palete[i].rgbRed = color[2];
+        }
+        SetDIBitsToDevice(dc, 0, 0, 320, 200, 0, 0, 0, 200, frameBuffers.data() + !backBuffer * FrameBufferSize, reinterpret_cast<BITMAPINFO*>(&bmi), DIB_RGB_COLORS);
         break;
     }
     case WM_CLOSE:
@@ -82,7 +109,7 @@ int TestPC::Run()
             TranslateMessage(&msg);
             DispatchMessage(&msg);
         }
-        auto r = 1; //cpu.Run(1024);
+        auto r = cpu.Run(1024);
         if (r) {
             swal::winapi_call(WaitMessage());
         }
