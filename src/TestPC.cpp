@@ -1,6 +1,7 @@
 #include "TestPC.h"
 #include <swal/window.h>
 #include <fstream>
+#include <dwmapi.h>
 
 namespace {
 
@@ -46,7 +47,7 @@ ATOM TestPC::MyRegisterClass()
 		wcex.hInstance = hInstance;
 		wcex.hIcon = LoadIcon(NULL, IDI_APPLICATION);
 		wcex.hCursor = LoadCursor(NULL, IDC_ARROW);
-		wcex.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+		wcex.hbrBackground = NULL; //reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
 		wcex.lpszMenuName = nullptr;
 		wcex.lpszClassName = ftWndClassName;
 		wcex.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
@@ -60,7 +61,7 @@ LRESULT TestPC::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     swal::Wnd wnd = hWnd;
 	switch (message) {
-    case WM_TIMER: {
+    case WM_USER + 20: {
         cpu.SetINTR(VSync);
         window.InvalidateRect(false);
         break;
@@ -85,7 +86,7 @@ LRESULT TestPC::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             bmi.palete[i].rgbGreen = color[1];
             bmi.palete[i].rgbRed = color[2];
         }
-        SetDIBitsToDevice(dc, 0, 0, 320, 200, 0, 0, 0, 200, frameBuffers.data() + !backBuffer * FrameBufferSize, reinterpret_cast<BITMAPINFO*>(&bmi), DIB_RGB_COLORS);
+        StretchDIBits(dc, 0, 0, 640, 400, 0, 0, 320, 200, frameBuffers.data() + !backBuffer * FrameBufferSize, reinterpret_cast<BITMAPINFO*>(&bmi), DIB_RGB_COLORS, SRCCOPY);
         break;
     }
     case WM_CLOSE:
@@ -100,7 +101,6 @@ LRESULT TestPC::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 int TestPC::Run()
 {
     window.Show(swal::ShowCmd::Show);
-    swal::winapi_call(SetTimer(window, VideoTimer, 16, nullptr));
     while (true) {
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
@@ -111,7 +111,8 @@ int TestPC::Run()
         }
         auto r = cpu.Run(1024);
         if (r) {
-            swal::winapi_call(WaitMessage());
+            DwmFlush();
+            SendMessage(window, WM_USER + 20, 0, 0);
         }
     }
     return 0;

@@ -12,78 +12,64 @@ struc farptr arg {
     farptr arg
 }
 
-rept 0x20 { farptr 0x40:def_handler }
-farptr 0x40:def_handler2
+        farptr  0x40:def_handler
+        farptr  0x40:def_handler
+        farptr  0x40:def_handler
+        farptr  0x40:def_handler3
+rept 0x20 - 4 {
+        farptr  0x40:def_handler
+}
+        farptr  0x40:def_handler2
 times 0x400 - $% db 0
 
 org 0
-        jmp start
+        jmp     start
 def_handler:
         hlt
-        jmp def_handler
+        jmp     def_handler
 def_handler2:
-        push ax
-        mov ax, 1
-        out 0, al
-        pop ax;
+        push    ax
+        mov     ax, 1
+        out     0, al
+        pop     ax;
+def_handler3:
         iret
-start:  mov ax, data_seg
-        mov ds, ax
-        mov ax, 0x9000
-        mov ss, ax
-        xor sp, sp
-        add ah, 0x10
-        mov es, ax
+start:  mov     ax, data_seg
+        mov     ds, ax
+        mov     ax, 0x9000
+        mov     ss, ax
+        xor     sp, sp
+        add     ah, 0x10
+        mov     es, ax
 
-        mov cx, palete_words
-        mov di, 64000
-        mov si, palete
-        rep movsw
+        mov     cx, palete_words
+        mov     di, 64000
+        mov     si, palete
+        rep     movsw
 
-        mov al, 1
-        out 0, al
+        mov     al, 1
+        out     0, al
 
-        mov cx, palete_words
-        mov di, 64000
-        mov si, palete
-        rep movsw
+        mov     cx, palete_words
+        mov     di, 64000
+        mov     si, palete
+        rep     movsw
 
         sti
-@@:     hlt
-        mov byte [es:0], 0
-        mov byte [es:1], 1
-        mov byte [es:2], 2
-        mov byte [es:3], 3
-        mov byte [es:4], 4
-        mov byte [es:5], 5
-        mov byte [es:6], 6
-        mov byte [es:7], 7
-        mov byte [es:8], 8
-        mov byte [es:9], 9
-        mov byte [es:10], 10
-        mov byte [es:11], 11
-        mov byte [es:12], 12
-        mov byte [es:13], 13
-        mov byte [es:14], 14
-        mov byte [es:15], 15
+.loop:  hlt
+        mov     al, 0
+        mov     cx, 16
+        mov     di, 0
+@@:     stosb
+        inc     al
+        loop    @b
         hlt
-        mov byte [es:0], 0
-        mov byte [es:1], 1
-        mov byte [es:2], 2
-        mov byte [es:3], 3
-        mov byte [es:4], 4
-        mov byte [es:5], 5
-        mov byte [es:6], 6
-        mov byte [es:7], 7
-        mov byte [es:8], 8
-        mov byte [es:9], 9
-        mov byte [es:10], 10
-        mov byte [es:11], 11
-        mov byte [es:12], 12
-        mov byte [es:13], 13
-        mov byte [es:14], 14
-        mov byte [es:15], 15
-        jmp @b
+        mov     cx, 16
+        mov     di, 0
+@@:     stosb
+        dec     al
+        loop    @b
+        jmp     .loop
 
 align 16
 data_seg = $% / 16

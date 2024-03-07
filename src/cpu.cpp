@@ -1333,7 +1333,7 @@ struct CPU::Operations {
     {
         auto& ip = cpu->state.ip;
         auto logSz = !(op & 2);
-        auto off = SignExtend(cpu->ReadByte(CS, ip), logSz);
+        auto off = SignExtend(cpu->ReadMem(CS, ip, logSz), logSz);
         ip += off + (1 << logSz);
         return Normal;
     }

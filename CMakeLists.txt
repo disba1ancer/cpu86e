@@ -28,7 +28,7 @@ add_executable(test
     src/main.cpp
 )
 target_compile_definitions(test PRIVATE UNICODE=1 _WIN32_WINNT=0x0A00)
-target_link_libraries(test PRIVATE cpu86e swal::swal)
+target_link_libraries(test PRIVATE cpu86e swal::swal dwmapi)
 
 install(TARGETS cpu86e
     EXPORT cpu86e
