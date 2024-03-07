@@ -14,7 +14,7 @@ struc farptr arg {
 
 rept 0x20 { farptr 0x40:def_handler }
 farptr 0x40:def_handler2
-times 0x400 - $%% db 0
+times 0x400 - $% db 0
 
 org 0
         jmp start
@@ -50,23 +50,39 @@ start:  mov ax, data_seg
 
         sti
 @@:     hlt
-        mov byte [es:0], 1
-        mov byte [es:1], 2
-        mov byte [es:2], 3
-        mov byte [es:3], 4
-        mov byte [es:4], 5
-        mov byte [es:5], 6
-        mov byte [es:6], 7
-        mov byte [es:7], 8
+        mov byte [es:0], 0
+        mov byte [es:1], 1
+        mov byte [es:2], 2
+        mov byte [es:3], 3
+        mov byte [es:4], 4
+        mov byte [es:5], 5
+        mov byte [es:6], 6
+        mov byte [es:7], 7
+        mov byte [es:8], 8
+        mov byte [es:9], 9
+        mov byte [es:10], 10
+        mov byte [es:11], 11
+        mov byte [es:12], 12
+        mov byte [es:13], 13
+        mov byte [es:14], 14
+        mov byte [es:15], 15
         hlt
-        mov byte [es:0], 1
-        mov byte [es:1], 2
-        mov byte [es:2], 3
-        mov byte [es:3], 4
-        mov byte [es:4], 5
-        mov byte [es:5], 6
-        mov byte [es:6], 7
-        mov byte [es:7], 8
+        mov byte [es:0], 0
+        mov byte [es:1], 1
+        mov byte [es:2], 2
+        mov byte [es:3], 3
+        mov byte [es:4], 4
+        mov byte [es:5], 5
+        mov byte [es:6], 6
+        mov byte [es:7], 7
+        mov byte [es:8], 8
+        mov byte [es:9], 9
+        mov byte [es:10], 10
+        mov byte [es:11], 11
+        mov byte [es:12], 12
+        mov byte [es:13], 13
+        mov byte [es:14], 14
+        mov byte [es:15], 15
         jmp @b
 
 align 16

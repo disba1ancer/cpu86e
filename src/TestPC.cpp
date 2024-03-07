@@ -70,7 +70,7 @@ LRESULT TestPC::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         auto& bmih = bmi.header;
         bmih.biSize = sizeof(bmih);
         bmih.biWidth = 320;
-        bmih.biHeight = 200;
+        bmih.biHeight = -200;
         bmih.biPlanes = 1;
         bmih.biBitCount = 8;
         bmih.biCompression = BI_RGB;
