@@ -100,7 +100,14 @@ LRESULT TestPC::WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 
 int TestPC::Run()
 {
-    window.Show(swal::ShowCmd::Show);
+    auto style = window.GetLongPtr(GWL_STYLE);
+    style ^= style & (WS_THICKFRAME | WS_MAXIMIZEBOX);
+    window.SetLongPtr(GWL_STYLE, style);
+    RECT rc = { 0, 0, 640, 400 };
+    AdjustWindowRect(&rc, style, FALSE);
+    using SWP = swal::SetPosFlags;
+    window.SetPos(nullptr, 0, 0, rc.right - rc.left, rc.bottom - rc.top, SWP::NoMove | SWP::FrameChanged | SWP::ShowWindow);
+//    window.Show(swal::ShowCmd::Show);
     while (true) {
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (msg.message == WM_QUIT) {
