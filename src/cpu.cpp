@@ -508,20 +508,22 @@ struct CPU::Operations {
             WriteReg(cpu, modrm.addr, logSz, val);
         }
     }
-
+    template <Calc::Op opc>
     static int BiOp(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         auto& flags =cpu->state.flags;
         Calc calc(op & 1);
         ReadRM(cpu, prefixes, modRM, calc);
-        if (calc.DoOp(op, flags & CF) != calc.Cmp) {
+        calc.DoOp(opc, flags & CF);
+        if constexpr (opc != calc.Cmp) {
             WriteRM(cpu, prefixes, modRM, calc, op & 2);
         }
         flags = calc.GetFlags(flags);
         return Normal;
     }
 
+    template <Calc::Op opc>
     static int BiOpAI(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         prefixes.segment = CS;
@@ -531,7 +533,8 @@ struct CPU::Operations {
         modRM.addr = cpu->state.ip,
         cpu->state.ip += 1 << calc.logSz;
         ReadRM(cpu, prefixes, modRM, calc);
-        if (calc.DoOp(op, flags & CF) != calc.Cmp) {
+        calc.DoOp(opc, flags & CF);
+        if constexpr (opc != calc.Cmp) {
             WriteReg(cpu, AX, calc.logSz, calc.result);
         }
         flags = calc.GetFlags(flags);
@@ -568,15 +571,17 @@ struct CPU::Operations {
         return result;
     }
 
+    template <SegmentRegister sreg>
     static int PushSReg(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
-        PushVal(cpu, 1, cpu->state.sregs[(op >> 3) & 3]);
+        PushVal(cpu, 1, cpu->state.sregs[sreg]);
         return Normal;
     }
 
+    template <SegmentRegister sreg>
     static int PopSReg(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
-        cpu->state.sregs[(op >> 3) & 3] = PopVal(cpu, 1);
+        cpu->state.sregs[sreg] = PopVal(cpu, 1);
         return Normal;
     }
 
@@ -1623,19 +1628,20 @@ struct CPU::Operations {
     }
 
     using Op = int(CPU*, Prefixes&, uint8_t op);
+    using enum Calc::Op;
     static Op* map1[256];
 };
 
 CPU::Operations::Op*
 CPU::Operations::map1[256] = {
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, Ud, // 8
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x10
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, PushSReg, PopSReg, // 0x18
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, SegOvr, DAA, // 0x20
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, SegOvr, DAS, // 0x28
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, SegOvr, AAA, // 0x30
-    BiOp, BiOp, BiOp, BiOp, BiOpAI, BiOpAI, SegOvr, AAS, // 0x38
+    BiOp<Add>, BiOp<Add>, BiOp<Add>, BiOp<Add>, BiOpAI<Add>, BiOpAI<Add>, PushSReg<ES>, PopSReg<ES>, // 0
+    BiOp<Or >, BiOp<Or >, BiOp<Or >, BiOp<Or >, BiOpAI<Or >, BiOpAI<Or >, PushSReg<CS>, Ud, // 8
+    BiOp<Adc>, BiOp<Adc>, BiOp<Adc>, BiOp<Adc>, BiOpAI<Adc>, BiOpAI<Adc>, PushSReg<SS>, PopSReg<SS>, // 0x10
+    BiOp<Sbb>, BiOp<Sbb>, BiOp<Sbb>, BiOp<Sbb>, BiOpAI<Sbb>, BiOpAI<Sbb>, PushSReg<DS>, PopSReg<DS>, // 0x18
+    BiOp<And>, BiOp<And>, BiOp<And>, BiOp<And>, BiOpAI<And>, BiOpAI<And>, SegOvr, DAA, // 0x20
+    BiOp<Sub>, BiOp<Sub>, BiOp<Sub>, BiOp<Sub>, BiOpAI<Sub>, BiOpAI<Sub>, SegOvr, DAS, // 0x28
+    BiOp<Xor>, BiOp<Xor>, BiOp<Xor>, BiOp<Xor>, BiOpAI<Xor>, BiOpAI<Xor>, SegOvr, AAA, // 0x30
+    BiOp<Cmp>, BiOp<Cmp>, BiOp<Cmp>, BiOp<Cmp>, BiOpAI<Cmp>, BiOpAI<Cmp>, SegOvr, AAS, // 0x38
     IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, // 0x40
     IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, // 0x48
     PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, // 0x50
