@@ -453,6 +453,20 @@ struct CPU::Operations {
         return ZeroExtend(regs[reg ^ rh] >> shift, logSz);
     }
 
+    static auto ReadRegB(CPU* cpu, Register reg) -> RegVal
+    {
+        auto regs = cpu->state.gpr;
+        auto rh = reg & 4;
+        auto shift = 2 * rh;
+        return ZeroExtend(regs[reg ^ rh] >> shift, 0);
+    }
+
+    static auto ReadRegW(CPU* cpu, Register reg, int logSz) -> RegVal
+    {
+        auto regs = cpu->state.gpr;
+        return ZeroExtend(regs[reg], logSz);
+    }
+
     static void WriteReg(CPU* cpu, int reg, int logSz, RegVal val)
     {
         return WriteReg(cpu, Register(reg), logSz, val);
@@ -469,14 +483,27 @@ struct CPU::Operations {
         r ^= (r & mask) ^ ((val << shift) & mask);
     }
 
+    static void WriteRegB(CPU* cpu, Register reg, RegVal val)
+    {
+        auto regs = cpu->state.gpr;
+        auto mask = 0xFF;
+        auto rh = reg & 4;
+        auto shift = 2 * rh;
+        mask <<= shift;
+        auto& r = regs[reg ^ rh];
+        r ^= (r & mask) ^ ((val << shift) & mask);
+    }
+
+    static void WriteRegW(CPU* cpu, Register reg, int logSz, RegVal val)
+    {
+        auto regs = cpu->state.gpr;
+        auto mask = (0x100 << ((8 << logSz) - 8)) - 1;
+        auto& r = regs[reg];
+        r ^= (r & mask) ^ (val & mask);
+    }
+
     static void ReadRM(CPU* cpu, Prefixes prefixes, ModRM modrm, Calc& calc)
     {
-        if (modrm.type != modrm.Reg) {
-            auto sreg = GetSeg(prefixes, modrm.type);
-            calc.n[0] = cpu->ReadMem(sreg, modrm.addr, calc.logSz);
-        } else {
-            calc.n[0] = ReadReg(cpu, modrm.addr, calc.logSz);
-        }
         calc.n[0] = ReadRM(cpu, prefixes, modrm, calc.logSz);
         calc.n[1] = ReadReg(cpu, modrm.reg, calc.logSz);
     }
@@ -508,14 +535,25 @@ struct CPU::Operations {
             WriteReg(cpu, modrm.addr, logSz, val);
         }
     }
-    template <Calc::Op opc>
+
+    enum Width {
+        B,
+        W
+    };
+
+    enum Direction {
+        D,
+        I
+    };
+
+    template <Calc::Op opc, Width w, Direction d>
     static int BiOp(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         ModRM modRM = GetModRM(cpu);
         auto& flags =cpu->state.flags;
-        Calc calc(op & 1);
+        Calc calc(w);
         ReadRM(cpu, prefixes, modRM, calc);
-        calc.DoOp(opc, flags & CF);
+        calc.DoOp(opc, d, flags & CF);
         if constexpr (opc != calc.Cmp) {
             WriteRM(cpu, prefixes, modRM, calc, op & 2);
         }
@@ -523,7 +561,7 @@ struct CPU::Operations {
         return Normal;
     }
 
-    template <Calc::Op opc>
+    template <Calc::Op opc, Width w, Direction d>
     static int BiOpAI(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         prefixes.segment = CS;
@@ -533,7 +571,7 @@ struct CPU::Operations {
         modRM.addr = cpu->state.ip,
         cpu->state.ip += 1 << calc.logSz;
         ReadRM(cpu, prefixes, modRM, calc);
-        calc.DoOp(opc, flags & CF);
+        calc.DoOp(opc, d, flags & CF);
         if constexpr (opc != calc.Cmp) {
             WriteReg(cpu, AX, calc.logSz, calc.result);
         }
@@ -572,22 +610,23 @@ struct CPU::Operations {
     }
 
     template <SegmentRegister sreg>
-    static int PushSReg(CPU* cpu, Prefixes& prefixes, uint8_t op)
+    static int Push(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         PushVal(cpu, 1, cpu->state.sregs[sreg]);
         return Normal;
     }
 
     template <SegmentRegister sreg>
-    static int PopSReg(CPU* cpu, Prefixes& prefixes, uint8_t op)
+    static int Pop(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         cpu->state.sregs[sreg] = PopVal(cpu, 1);
         return Normal;
     }
 
+    template <SegmentRegister sreg>
     static int SegOvr(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
-        prefixes.segment = (op >> 3) & 3;
+        prefixes.segment = sreg;
         return Continue;
     }
 
@@ -701,39 +740,58 @@ struct CPU::Operations {
         return Normal;
     }
 
-    static int IncDec(CPU* cpu, Prefixes&, uint8_t op)
+    template <Register reg>
+    static int Inc(CPU* cpu, Prefixes&, uint8_t op)
     {
         auto regs = cpu->state.gpr;
         auto& flags = cpu->state.flags;
         Calc calc(1);
-        calc.n[0] = regs[op & 7];
+        calc.n[0] = regs[reg];
         calc.n[1] = 1;
-        calc.DoOp(op & 8 ? calc.Sub : calc.Add);
+        calc.DoOp(Add);
         calc.flagsMask ^= CF;
-        regs[op & 7] = calc.result;
+        regs[reg] = calc.result;
         flags = calc.GetFlags(flags);
         return Normal;
     }
 
-    static int PushReg(CPU* cpu, Prefixes& prefixes, uint8_t op)
+    template <Register reg>
+    static int Dec(CPU* cpu, Prefixes&, uint8_t op)
     {
-        PushVal(cpu, 1, cpu->state.gpr[op & 3]);
+        auto regs = cpu->state.gpr;
+        auto& flags = cpu->state.flags;
+        Calc calc(1);
+        calc.n[0] = regs[reg];
+        calc.n[1] = 1;
+        calc.DoOp(Sub);
+        calc.flagsMask ^= CF;
+        regs[reg] = calc.result;
+        flags = calc.GetFlags(flags);
         return Normal;
     }
 
-    static int PopReg(CPU* cpu, Prefixes& prefixes, uint8_t op)
+    template <Register reg>
+    static int Push(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
-        cpu->state.gpr[op & 3] = PopVal(cpu, 1);
+        PushVal(cpu, 1, cpu->state.gpr[reg]);
         return Normal;
     }
 
+    template <Register reg>
+    static int Pop(CPU* cpu, Prefixes& prefixes, uint8_t op)
+    {
+        cpu->state.gpr[reg] = PopVal(cpu, 1);
+        return Normal;
+    }
+
+    template <int opc>
     static int Jcc(CPU* cpu, Prefixes& prefixes, uint8_t op)
     {
         auto& ip = cpu->state.ip;
         auto& flags = cpu->state.flags;
         auto off = SignExtend(cpu->ReadByte(CS, ip++), 0);
         bool cond;
-        switch ((op >> 1) & 0x7) {
+        switch ((opc >> 1) & 0x7) {
         case 0:
             cond = flags & OF;
             break;
@@ -759,7 +817,7 @@ struct CPU::Operations {
             cond = !(flags & OF) == !(flags & SF) && !(flags & ZF);
             break;
         }
-        cond = cond ^ (op & 1);
+        cond = cond ^ (opc & 1);
         ip += off * cond;
         return Normal;
     }
@@ -1634,22 +1692,22 @@ struct CPU::Operations {
 
 CPU::Operations::Op*
 CPU::Operations::map1[256] = {
-    BiOp<Add>, BiOp<Add>, BiOp<Add>, BiOp<Add>, BiOpAI<Add>, BiOpAI<Add>, PushSReg<ES>, PopSReg<ES>, // 0
-    BiOp<Or >, BiOp<Or >, BiOp<Or >, BiOp<Or >, BiOpAI<Or >, BiOpAI<Or >, PushSReg<CS>, Ud, // 8
-    BiOp<Adc>, BiOp<Adc>, BiOp<Adc>, BiOp<Adc>, BiOpAI<Adc>, BiOpAI<Adc>, PushSReg<SS>, PopSReg<SS>, // 0x10
-    BiOp<Sbb>, BiOp<Sbb>, BiOp<Sbb>, BiOp<Sbb>, BiOpAI<Sbb>, BiOpAI<Sbb>, PushSReg<DS>, PopSReg<DS>, // 0x18
-    BiOp<And>, BiOp<And>, BiOp<And>, BiOp<And>, BiOpAI<And>, BiOpAI<And>, SegOvr, DAA, // 0x20
-    BiOp<Sub>, BiOp<Sub>, BiOp<Sub>, BiOp<Sub>, BiOpAI<Sub>, BiOpAI<Sub>, SegOvr, DAS, // 0x28
-    BiOp<Xor>, BiOp<Xor>, BiOp<Xor>, BiOp<Xor>, BiOpAI<Xor>, BiOpAI<Xor>, SegOvr, AAA, // 0x30
-    BiOp<Cmp>, BiOp<Cmp>, BiOp<Cmp>, BiOp<Cmp>, BiOpAI<Cmp>, BiOpAI<Cmp>, SegOvr, AAS, // 0x38
-    IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, // 0x40
-    IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, IncDec, // 0x48
-    PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, PushReg, // 0x50
-    PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, PopReg, // 0x58
+    BiOp<Add>, BiOp<Add>, BiOp<Add>, BiOp<Add>, BiOpAI<Add>, BiOpAI<Add>, Push<ES>, Pop<ES>, // 0
+    BiOp<Or >, BiOp<Or >, BiOp<Or >, BiOp<Or >, BiOpAI<Or >, BiOpAI<Or >, Push<CS>, Ud, // 8
+    BiOp<Adc>, BiOp<Adc>, BiOp<Adc>, BiOp<Adc>, BiOpAI<Adc>, BiOpAI<Adc>, Push<SS>, Pop<SS>, // 0x10
+    BiOp<Sbb>, BiOp<Sbb>, BiOp<Sbb>, BiOp<Sbb>, BiOpAI<Sbb>, BiOpAI<Sbb>, Push<DS>, Pop<DS>, // 0x18
+    BiOp<And>, BiOp<And>, BiOp<And>, BiOp<And>, BiOpAI<And>, BiOpAI<And>, SegOvr<ES>, DAA, // 0x20
+    BiOp<Sub>, BiOp<Sub>, BiOp<Sub>, BiOp<Sub>, BiOpAI<Sub>, BiOpAI<Sub>, SegOvr<CS>, DAS, // 0x28
+    BiOp<Xor>, BiOp<Xor>, BiOp<Xor>, BiOp<Xor>, BiOpAI<Xor>, BiOpAI<Xor>, SegOvr<SS>, AAA, // 0x30
+    BiOp<Cmp>, BiOp<Cmp>, BiOp<Cmp>, BiOp<Cmp>, BiOpAI<Cmp>, BiOpAI<Cmp>, SegOvr<DS>, AAS, // 0x38
+    Inc<AX>, Inc<CX>, Inc<DX>, Inc<BX>, Inc<SP>, Inc<BP>, Inc<SI>, Inc<DI>, // 0x40
+    Dec<AX>, Dec<CX>, Dec<DX>, Dec<BX>, Dec<SP>, Dec<BP>, Dec<SI>, Dec<DI>, // 0x48
+    Push<AX>, Push<CX>, Push<DX>, Push<BX>, Push<SP>, Push<BP>, Push<SI>, Push<DI>, // 0x50
+    Pop <AX>, Pop <CX>, Pop <DX>, Pop <BX>, Pop <SP>, Pop <BP>, Pop <SI>, Pop <DI>, // 0x58
     Ud, Ud, Ud, Ud, Ud, Ud, Ud, Ud, // 0x60
     Ud, Ud, Ud, Ud, Ud, Ud, Ud, Ud, // 0x68
-    Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, // 0x70
-    Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, Jcc, // 0x78
+    Jcc<0>, Jcc<1>, Jcc<2>, Jcc<3>, Jcc<4>, Jcc<5>, Jcc<6>, Jcc<7>, // 0x70
+    Jcc<8>, Jcc<9>, Jcc<10>, Jcc<11>, Jcc<12>, Jcc<13>, Jcc<14>, Jcc<15>, // 0x78
     BiOpIm, BiOpIm, BiOpIm, BiOpIm, Test, Test, Xchg, Xchg, // 0x80
     Mov, Mov, MovR, MovR, MovSreg, Lea, MovSregR, PopRM, // 0x88
     Nop, XchgA, XchgA, XchgA, XchgA, XchgA, XchgA, XchgA, // 0x90 // TODO: xchg rax, r8
